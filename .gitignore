@@ -1,0 +1,36 @@
+# Archivos personales del proyecto: nunca se suben
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.claude/
+.agents/
+.gemini/
+
+# Versiones anteriores de la skill (solo para comparar en local)
+historial/
+
+# Credenciales y datos sensibles
+.env
+.env.*
+*.key
+*.pem
+*.p12
+secrets/
+credenciales*
+*.token
+
+# Proyectos de prueba y salidas reales de agy (pueden tener rutas o datos personales)
+pruebas-reales/
+
+# Paquetes generados
+*.zip
+dist/
+node_modules/
+
+# Sistema y editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+*.log

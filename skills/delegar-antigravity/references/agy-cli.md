@@ -1,0 +1,58 @@
+# Referencia de Antigravity CLI (agy) en modo no interactivo
+
+Comprobado con agy 1.3.3 en Windows 11 (2026-10-11) y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
+
+## Flags útiles
+
+| Flag | Para qué |
+|---|---|
+| `-p "<mensaje>"` | Ejecuta un mensaje y termina (alias `--print`, `--prompt`) |
+| `--output-format json` | Un solo objeto JSON al final; `stream-json` emite eventos NDJSON |
+| `--model <slug>` | Modelo; ver `agy models` |
+| `--mode plan` | Según la documentación, solo herramientas de lectura. En modo no interactivo **no impide editar** (comprobado) y a veces prepara un plan en lugar de responder |
+| `--mode accept-edits` | Aprueba crear y editar archivos. Sin `--mode`, agy también edita en modo no interactivo (comprobado) |
+| `--sandbox` | Restringe la terminal al sandbox del sistema |
+| `--print-timeout 600s` | Tiempo límite; la ayuda dice 0s (sin límite) y la documentación 5m: pásalo siempre |
+| `--add-dir <carpeta>` | Agrega una carpeta al espacio de trabajo (se puede repetir) |
+| `--conversation <id>` / `-c` | Continúa una conversación por ID, o la última |
+| `--json-schema <archivo>` | Fuerza una salida estructurada en `structured_output` |
+| `--effort low…max` | Esfuerzo de razonamiento. Solo con el nombre base del modelo (`gemini-3.8-flash`); con un nivel en el nombre, agy lo rechaza |
+| `--dangerously-skip-permissions` | Aprueba todo, incluida la terminal. No lo uses sin un sí explícito del usuario |
+
+## Salida JSON
+
+```json
+{"conversation_id":"…","status":"SUCCESS","response":"…","duration_seconds":13.9,"num_turns":1,
+ "usage":{"input_tokens":65192,"output_tokens":739,"thinking_tokens":0,"cache_read_tokens":14277,"total_tokens":65931},
+ "denied_actions":[{"action":"command","display_name":"RunCommand"}]}
+```
+
+- `status`: `SUCCESS`, `ERROR`, `CANCELED`, `INTERRUPTED`, `INVALID`, `WAITING` o `RUNNING`. Con `ERROR` aparece `error`.
+- `denied_actions` solo aparece si se denegó algo.
+- Al continuar una conversación, `num_turns` y `usage` son acumulados.
+- `response` enlaza los archivos como `[nombre](file:///C:/ruta)`; el script los convierte en rutas relativas.
+
+## Permisos en modo no interactivo
+
+- **Archivos:** dentro del espacio de trabajo (el directorio actual más cada `--add-dir`), agy lee y escribe sin preguntar, **en cualquier modo**. Las ediciones caen en los archivos reales del proyecto. Ningún flag garantiza la solo lectura: el script lo pide en el mensaje y comprueba después qué archivos cambiaron.
+- **Terminal:** se deniega sin preguntar. agy sale con código 0, `status` `SUCCESS`, `response` vacío, `denied_actions` y un aviso en la salida de errores. El script lo clasifica como `incompleto`.
+- **Reglas:** se pueden permitir comandos en `~/.gemini/antigravity-cli/settings.json`, con `"permissions": {"allow": ["command(git status)"]}`. La prioridad es deny > ask > allow, y en Windows un comando con subcomandos necesita `regex:`. Cambiar esa configuración es decisión del usuario.
+
+## Contexto que agy carga por sí solo
+
+`AGENTS.md`, `GEMINI.md` y `.agents/rules/*.md` del proyecto, y `~/.gemini/GEMINI.md`. **No carga `CLAUDE.md`** (comprobado): por eso la plantilla del encargo le pide leerlo.
+
+## Trampas
+
+| Trampa | Solución |
+|---|---|
+| Con la entrada estándar abierta, agy espera para siempre | El script la cierra |
+| Capturar la salida con una tubería: un proceso nieto puede retenerla y bloquear al orquestador | El script escribe la salida en archivos |
+| Pedirle que busque un archivo «en algún lugar»: recorre todo el disco | Da rutas relativas al proyecto en el encargo |
+| Un comodín en el encargo (`src/*.js`): agy intenta expandirlo con la terminal, se lo deniegan y la respuesta queda vacía o a medias (comprobado) | Lista cada archivo por su nombre; obtén la lista tú antes de escribir el encargo |
+| Mensajes largos o con comillas como argumento en Windows | El mensaje solo apunta al archivo del encargo |
+| El modelo por defecto de agy puede ser un modelo Claude | El script pasa siempre `--model` |
+| La carpeta del proyecto no está entre las confiables de agy | No afecta al modo no interactivo (comprobado) |
+| Con varias carpetas en el espacio de trabajo, una ruta relativa puede resolverse en la equivocada | El encargo dice la ruta absoluta del proyecto y que las rutas son relativas a ella |
+| Varios agy a la vez en el mismo proyecto ven los cambios a medio hacer de los otros | En paralelo, cada encargo de edición toca archivos distintos |
+| Sin sesión iniciada, agy falla con «authentication required» | El usuario abre `agy` una vez de forma interactiva |

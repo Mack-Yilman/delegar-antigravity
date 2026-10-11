@@ -1,0 +1,43 @@
+# Publica una Release al subir una etiqueta vX.Y.Z. El archivo adjunto contiene solo la skill:
+#   delegar-antigravity.zip -> carpeta delegar-antigravity/ con SKILL.md, LICENSE.txt, scripts/ y references/
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+      - name: Comprobar que la etiqueta coincide con package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "La etiqueta $GITHUB_REF_NAME no coincide con package.json ($version)" >&2
+            exit 1
+          fi
+
+      - name: Empaquetar solo la skill
+        run: |
+          cd skills
+          zip -r ../delegar-antigravity.zip delegar-antigravity
+
+      - name: Notas desde el CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## /{ if (f) exit; if (index($0, "## " v) == 1) { f = 1; next } } f' CHANGELOG.md > notas.md
+
+      - name: Crear la Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" delegar-antigravity.zip --title "$GITHUB_REF_NAME" --notes-file notas.md
