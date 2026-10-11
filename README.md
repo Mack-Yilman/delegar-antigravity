@@ -1,6 +1,6 @@
 # Delegar a Antigravity
 
-Una skill para que tu agente de programación (Claude Code, Gemini CLI u otro con terminal) **delegue subtareas pesadas a [Antigravity CLI](https://antigravity.google/docs/cli/headless/) (`agy`)** y ahorre sus propios tokens.
+Una skill para que **Claude Code**, o cualquier otro LLM que disponga de una terminal, **delegue subtareas pesadas a [Antigravity CLI](https://antigravity.google/docs/cli/headless/) (`agy`)** y ahorre sus propios tokens.
 
 El agente actúa como orquestador:
 
@@ -23,7 +23,7 @@ Renombré obtenerDato a leerDato en la definición, la exportación y las llamad
 
 - [Antigravity CLI](https://antigravity.google/docs/cli/) (`agy`) instalado y con la sesión iniciada: ábrelo una vez de forma interactiva.
 - Node.js 22 o superior.
-- Un agente con terminal que cargue skills (Claude Code, Gemini CLI, Codex…). **No sirve en chats sin terminal** (app de Gemini, Claude.ai), porque necesita ejecutar `agy`.
+- Claude Code, o cualquier otro LLM con terminal que cargue skills. **No sirve en chats sin terminal** (app de Gemini, Claude.ai), porque necesita ejecutar `agy`.
 
 ## Instalación
 
@@ -33,7 +33,7 @@ Renombré obtenerDato a leerDato en la definición, la exportación y las llamad
 irm https://raw.githubusercontent.com/Mack-Yilman/delegar-antigravity/main/install.ps1 | iex
 ```
 
-**Sin menú,** directo a Claude Code (también `gemini-cli`, `descargas` o `todos`):
+**Sin menú,** directo a Claude Code (también `descargas` o `todos`):
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mack-Yilman/delegar-antigravity/main/install.ps1))) -Destino claude-code
@@ -45,19 +45,12 @@ irm https://raw.githubusercontent.com/Mack-Yilman/delegar-antigravity/main/insta
 npx skills add Mack-Yilman/delegar-antigravity
 ```
 
-**Gemini CLI:**
-
-```bash
-gemini skills install https://github.com/Mack-Yilman/delegar-antigravity --path skills/delegar-antigravity
-```
-
 **A mano:** descarga [delegar-antigravity.zip](https://github.com/Mack-Yilman/delegar-antigravity/releases/latest/download/delegar-antigravity.zip) y descomprímelo en la carpeta de skills de tu agente:
 
 | Agente | Carpeta |
 |---|---|
 | Claude Code | `~/.claude/skills/` o `.claude/skills/` del proyecto |
-| Gemini CLI | `~/.gemini/skills/` |
-| Otros | La carpeta de skills que indique su documentación |
+| Otro LLM con terminal | La carpeta de skills que indique su documentación |
 
 **Pidiéndoselo a tu agente:** pega este mensaje:
 

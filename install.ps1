@@ -4,7 +4,7 @@
 #   Con menu:  irm https://raw.githubusercontent.com/Mack-Yilman/delegar-antigravity/main/install.ps1 | iex
 #   Sin menu:  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mack-Yilman/delegar-antigravity/main/install.ps1))) -Destino claude-code
 #
-# Destinos: claude-code, gemini-cli, descargas, todos.
+# Destinos: claude-code, descargas, todos.
 # El archivo es solo ASCII a proposito: los textos con tilde usan \uXXXX (funcion T), asi funciona
 # igual en Windows PowerShell 5.1 y PowerShell 7 sin depender de la codificacion. Nunca pases una
 # ruta por T: Regex.Unescape fallaria con "\U" de C:\Users.
@@ -86,10 +86,6 @@ param([string]$Destino)
                 Copy-Skill $skill (Ruta '.claude', 'skills') 'Claude Code'
                 Write-Host (T '       Abre una sesi\u00f3n nueva y pide, por ejemplo: delega esto a Antigravity.')
             }
-            'gemini-cli' {
-                Copy-Skill $skill (Ruta '.gemini', 'skills') 'Gemini CLI'
-                Write-Host (T '       En Gemini CLI, /skills reload la carga sin reiniciar.')
-            }
             'descargas' {
                 # Solo se sobrescribe este .zip, nunca se borra nada. La carpeta puede no existir (perfil nuevo).
                 $descargas = Get-Descargas
@@ -104,9 +100,8 @@ param([string]$Destino)
 
     $opciones = [ordered]@{
         '1' = 'claude-code'
-        '2' = 'gemini-cli'
-        '3' = 'descargas'
-        '4' = 'todos'
+        '2' = 'descargas'
+        '3' = 'todos'
     }
 
     Write-Host ''
@@ -120,9 +115,8 @@ param([string]$Destino)
     if (-not $Destino) {
         Write-Host (T '\u00bfD\u00f3nde quieres instalar la skill?')
         Write-Host '  1) Claude Code'
-        Write-Host '  2) Gemini CLI'
-        Write-Host (T '  3) Descargas (.zip para otro agente con terminal)')
-        Write-Host '  4) Todos'
+        Write-Host (T '  2) Descargas (.zip para otro LLM con terminal)')
+        Write-Host '  3) Todos'
         $eleccion = "$(Read-Host (T 'Escribe un n\u00famero'))".Trim()
         if (-not $opciones.Contains($eleccion)) { throw ((T 'Opci\u00f3n no v\u00e1lida: ') + $eleccion) }
         $Destino = $opciones[$eleccion]
@@ -131,7 +125,7 @@ param([string]$Destino)
     $skill = Get-Skill
     try {
         if ($Destino -eq 'todos') {
-            foreach ($opcion in 'claude-code', 'gemini-cli', 'descargas') { Install-Destino $skill $opcion }
+            foreach ($opcion in 'claude-code', 'descargas') { Install-Destino $skill $opcion }
         } else {
             Install-Destino $skill $Destino
         }
