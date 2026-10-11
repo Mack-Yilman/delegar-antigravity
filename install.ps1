@@ -91,8 +91,10 @@ param([string]$Destino)
                 Write-Host (T '       En Gemini CLI, /skills reload la carga sin reiniciar.')
             }
             'descargas' {
-                # Solo se sobrescribe este .zip, nunca se borra nada.
-                $zip = Join-Path (Get-Descargas) "$nombre.zip"
+                # Solo se sobrescribe este .zip, nunca se borra nada. La carpeta puede no existir (perfil nuevo).
+                $descargas = Get-Descargas
+                New-Item -ItemType Directory -Path $descargas -Force | Out-Null
+                $zip = Join-Path $descargas "$nombre.zip"
                 Copy-Item -Path $skill.Zip -Destination $zip -Force
                 Write-Hecho 'Descargas' $zip
                 Write-Host (T '       Descompr\u00edmelo en la carpeta de skills de tu agente.')
