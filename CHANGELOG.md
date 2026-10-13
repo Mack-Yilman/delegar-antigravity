@@ -1,5 +1,25 @@
 # Historial de versiones
 
+## 0.2.0 — 2026-10-12
+
+Antigravity quitó Gemini Pro y Flash 3.6–3.7 sin aviso, y la cadena de respaldo fija se quedó sin modelos. Esta versión deja de depender de nombres con versión y corrige lo que apareció en el uso real.
+
+- **Modelos según la lista vigente:**
+  - `--modelos` muestra lo que hay hoy en `agy models`, agrupado por familia, y a qué modelo se resuelve cada alias;
+  - `--modelo` acepta alias (`flash-medium`, `pro-high`, `sonnet-low`, `gpt-oss`…) y los resuelve a la versión más alta disponible. Sin Pro, `pro-*` usa `flash-high` y el resumen lo dice;
+  - la lista se guarda unas horas, porque `agy models` tarda unos 12 s, y se refresca si agy rechaza un modelo o con `--refrescar-modelos`.
+- **Respaldo dinámico:** ante un error de cuota o un modelo que ya no existe, prueba las versiones anteriores del mismo alias y luego el nivel vecino, siempre con Gemini. Antes, un modelo inexistente cortaba la cadena.
+- **Secretos:** si el espacio de trabajo tiene `.env`, `.dev.vars`, claves o credenciales, el script se detiene con el estado `secretos` (código 4) sin ejecutar agy, porque agy puede leerlos aunque el encargo lo prohíba. `--permitir-secretos` lo permite con el permiso del usuario.
+- **Archivos tocados:**
+  - los archivos del propio script ya no cuentan, así que la carpeta del encargo sirve como `--cwd`;
+  - con git, también vigila los archivos ignorados, como `CLAUDE.md` o `.env`;
+  - sin git, el resumen avisa que compara fechas y puede incluir cambios de otros procesos.
+- **Tiempo agotado por agy:** cuando agy agota su propio tiempo razonando, el estado es `timeout` con la conversación, para rescatarla pidiendo que entregue ya. Antes daba `incompleto`.
+- **Denegaciones explicadas:** el detalle de `incompleto` dice si fue la terminal, una herramienta MCP o la lectura de un archivo, y que una sola denegación vacía toda la respuesta.
+- `--timeout`, `--margen` y `--max-respuesta` deben ser enteros positivos: un valor inválido hacía que el script cortara a agy al instante.
+- En Windows, un `--cwd` de 259 caracteres o más se rechaza con un mensaje claro. Antes fallaba con `spawn … ENOENT`, como si agy no estuviera instalado.
+- **SKILL.md:** alias en lugar de nombres con versión, costos reales (hasta 15 min y 500 mil tokens), una sección para revisiones y auditorías (máximo de hallazgos, `--timeout 1200` y verificar cada hallazgo) y una plantilla que pide leer solo los archivos listados.
+
 ## 0.1.0 — 2026-10-11
 
 Primera versión.

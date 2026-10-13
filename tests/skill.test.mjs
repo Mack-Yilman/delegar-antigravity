@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RESPALDO } from '../skills/delegar-antigravity/scripts/agy.mjs';
+import { VECINOS, resolverModelo } from '../skills/delegar-antigravity/scripts/agy.mjs';
+import { LISTA_1210 } from './listas-modelos.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const leer = (...ruta) => readFileSync(join(repo, ...ruta), 'utf8').replace(/\r\n/g, '\n');
@@ -14,7 +15,6 @@ const [carpetaSkill] = readdirSync(join(repo, 'skills'));
 const raiz = join(repo, 'skills', carpetaSkill);
 const texto = leer('skills', carpetaSkill, 'SKILL.md');
 const [, frontmatter, cuerpo] = texto.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/) ?? [];
-const MODELOS = leer('tests', 'modelos-conocidos.txt').split('\n').filter(Boolean);
 
 // Lo que se instala: si agregas un archivo a la skill, agrégalo aquí y en $archivos de install.ps1.
 const INSTALABLES = ['LICENSE.txt', 'SKILL.md', 'references/agy-cli.md', 'references/modelos.md', 'scripts/agy.mjs'];
@@ -86,23 +86,31 @@ test('SKILL.md enlaza cada referencia y los enlaces existen', () => {
   assert.deepEqual([...new Set(enlaces)].sort(), referencias);
 });
 
-test('los modelos nombrados existen en agy', () => {
-  const archivos = ['SKILL.md', 'references/modelos.md', 'references/agy-cli.md'].map((r) => leer('skills', carpetaSkill, r));
-  for (const contenido of archivos) {
-    for (const [, slug] of contenido.matchAll(/`((?:gemini|claude|gpt-oss)-[a-z0-9.-]+[a-z0-9])`/g)) {
-      // Un nombre base (gemini-3.8-flash) vale si agy lista sus niveles: se usa con --effort.
-      assert.ok(MODELOS.includes(slug) || MODELOS.some((m) => m.startsWith(`${slug}-`)), `modelo desconocido: ${slug}`);
-    }
-  }
+test('SKILL.md no fija modelos con versión y sus alias se resuelven con la lista vigente', () => {
+  // Antigravity cambia los modelos sin aviso: la skill habla de alias y el script los resuelve con agy models.
+  // Los nombres con versión solo pueden aparecer en ejemplos de salida (bloques de código).
+  const prosa = lineasFueraDeCodigo().join('\n');
+  assert.doesNotMatch(prosa, /\b(?:gemini|claude|gpt-oss)-\d/, 'nombre de modelo con versión fuera de un ejemplo');
+  // Los alias son: todo `familia-nivel` del texto y todo lo que diga la columna «Alias» de la tabla de modelos.
+  const seccion = prosa.slice(prosa.indexOf('## Elegir modelo'), prosa.indexOf('## Flujo'));
+  const columna = seccion
+    .split('\n')
+    .filter((l) => l.startsWith('|') && !l.startsWith('|---'))
+    .slice(1)
+    .flatMap((l) => [...l.split('|')[2].matchAll(/`([^`]+)`/g)].map((m) => m[1]));
+  const sufijo = [...prosa.matchAll(/`([a-z]+(?:-[a-z]+)*-(?:low|medium|high))`/g)].map((m) => m[1]);
+  const alias = [...new Set([...columna, ...sufijo])];
+  assert.ok(columna.length >= 6, `la tabla de modelos de SKILL.md no tiene alias: ${columna}`);
+  for (const a of alias) assert.ok(resolverModelo(a, LISTA_1210).slug, `alias sin resolver con la lista del 12/10: ${a}`);
 });
 
-test('la cadena de respaldo de modelos.md es la del script', () => {
+test('la tabla de respaldo de modelos.md es la del script', () => {
   const modelos = leer('skills', carpetaSkill, 'references', 'modelos.md');
   const tabla = {};
-  for (const [, pedido, cadena] of modelos.matchAll(/^\| `([^`]+)` \| (`[^|]+`) \|$/gm)) {
+  for (const [, pedido, cadena] of modelos.matchAll(/^\| `([a-z]+-(?:low|medium|high))` \| (`[^|]+`) \|$/gm)) {
     tabla[pedido] = [...cadena.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
   }
-  assert.deepEqual(tabla, RESPALDO);
+  assert.deepEqual(tabla, VECINOS);
 });
 
 test('los flags que cita SKILL.md existen en el script o en agy', () => {

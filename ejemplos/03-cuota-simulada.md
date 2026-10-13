@@ -1,6 +1,6 @@
 # Ejemplo 03 — Error de cuota simulado
 
-**Preparación:** el mismo proyecto. `AGY_BIN` apunta a `tests/fake-agy.mjs` con `FAKE_AGY_ESCENARIO=cuota` y `FAKE_AGY_CUOTA=gemini-3.8-flash-medium,gemini-3.7-flash-medium`: esos dos modelos responden con error de cuota.
+**Preparación:** el mismo proyecto. `AGY_BIN` apunta a `tests/fake-agy.mjs` con `FAKE_AGY_ESCENARIO=cuota` y `FAKE_AGY_CUOTA=gemini-3.8-flash-medium,gemini-3.8-flash-high`: esos dos modelos responden con error de cuota. El agy falso lista los modelos del 2026-10-12, así que la cadena de `flash-medium` es `flash-high` y luego `flash-low`. `DELEGAR_AGY_CACHE` apunta a una carpeta propia de la prueba, para no mezclar la lista falsa con la real.
 
 **Mensaje del usuario:**
 
