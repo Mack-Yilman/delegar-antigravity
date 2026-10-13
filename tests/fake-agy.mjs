@@ -1,10 +1,13 @@
-// agy falso para las pruebas de scripts/agy.mjs. Imita las salidas reales de agy 1.3.3 (2026-10-11).
+// agy falso para las pruebas de scripts/agy.mjs. Imita las salidas reales de agy 1.3.3 (2026-10-11 y 12).
 // El escenario se elige con FAKE_AGY_ESCENARIO; cada llamada se anota en FAKE_AGY_REGISTRO (una línea JSON).
-//   exito, edita, denegado, vacio, modelo_invalido, json_roto, lento, auth
+//   exito, edita, edita_ignorado, denegado, vacio, modelo_invalido, json_roto, lento, auth, print_timeout
 //   cuota: los modelos de FAKE_AGY_CUOTA (separados por comas) responden con error de cuota; el resto, éxito.
+// `agy models` responde con FAKE_AGY_MODELOS (separados por comas; por defecto, la lista del 2026-10-12).
+// Como el agy real, un modelo que no está en esa lista da «invalid model selection» en cualquier escenario.
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
+import { LISTA_1210, salidaModels } from './listas-modelos.mjs';
 
 const args = process.argv.slice(2);
 const valor = (flag) => {
@@ -13,12 +16,22 @@ const valor = (flag) => {
 };
 const modelo = valor('--model');
 const escenario = process.env.FAKE_AGY_ESCENARIO ?? 'exito';
+const lista = process.env.FAKE_AGY_MODELOS ? process.env.FAKE_AGY_MODELOS.split(',') : LISTA_1210;
 
 // Como el agy real, lee stdin hasta el final: si el script lo dejara abierto, esto se colgaría.
 for await (const _ of process.stdin);
 
 if (process.env.FAKE_AGY_REGISTRO) {
   appendFileSync(process.env.FAKE_AGY_REGISTRO, JSON.stringify({ args, cwd: process.cwd() }) + '\n');
+}
+
+if (args[0] === 'models') {
+  if (process.env.FAKE_AGY_MODELS_FALLA) {
+    process.stderr.write('error: authentication required\n');
+    process.exit(1);
+  }
+  process.stdout.write(salidaModels(lista));
+  process.exit(0);
 }
 
 const uso = { input_tokens: 65192, output_tokens: 739, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 65931 };
@@ -37,6 +50,13 @@ const salir = (objeto, codigo = 0, stderr = '') => {
   if (stderr) process.stderr.write(stderr + '\n');
   process.exit(codigo);
 };
+const invalido = () => {
+  const error = `invalid model selection (--model "${modelo}" --effort ""): model ${modelo} is not recognized as a known model or custom model in settings`;
+  salir(fallo(error), 1, `error: ${error}`);
+};
+
+// Un nombre base (gemini-3.8-flash, con --effort) vale si la lista tiene alguno de sus niveles.
+if (modelo && !lista.includes(modelo) && !lista.some((m) => m.startsWith(`${modelo}-`))) invalido();
 
 switch (escenario) {
   case 'exito':
@@ -45,6 +65,11 @@ switch (escenario) {
   case 'edita':
     writeFileSync(join(process.cwd(), 'nuevo.txt'), 'creado por agy falso\n');
     salir(exito('Creé nuevo.txt.\n'));
+    break;
+  case 'edita_ignorado':
+    // Un archivo que git ignora (como CLAUDE.md o .dev.vars en los repos del usuario).
+    appendFileSync(join(process.cwd(), 'CLAUDE.md'), 'editado por agy falso\n');
+    salir(exito('Edité CLAUDE.md.\n'));
     break;
   case 'largo':
     salir(exito('x'.repeat(5000)));
@@ -59,11 +84,13 @@ switch (escenario) {
   case 'vacio':
     salir(exito(''));
     break;
-  case 'modelo_invalido': {
-    const error = `invalid model selection (--model "${modelo}" --effort ""): model ${modelo} is not recognized as a known model or custom model in settings`;
-    salir(fallo(error), 1, `error: ${error}`);
+  case 'print_timeout':
+    // agy agotó su propio --print-timeout razonando: responde vacío, pero la conversación sigue disponible.
+    salir(exito('', { duration_seconds: 900.2 }), 0, `warning: print timeout ${valor('--print-timeout')} reached, returning partial output`);
     break;
-  }
+  case 'modelo_invalido':
+    invalido();
+    break;
   case 'cuota': {
     const agotados = (process.env.FAKE_AGY_CUOTA ?? '').split(',');
     if (agotados.includes(modelo)) {

@@ -1,6 +1,6 @@
 # Referencia de Antigravity CLI (agy) en modo no interactivo
 
-Comprobado con agy 1.3.3 en Windows 11 (2026-10-11) y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
+Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 y 12) y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
 
 ## Flags útiles
 
@@ -8,7 +8,7 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11) y con la documentación ofic
 |---|---|
 | `-p "<mensaje>"` | Ejecuta un mensaje y termina (alias `--print`, `--prompt`) |
 | `--output-format json` | Un solo objeto JSON al final; `stream-json` emite eventos NDJSON |
-| `--model <slug>` | Modelo; ver `agy models` |
+| `--model <slug>` | Modelo exacto de `agy models`. El script acepta alias (`flash-medium`) y los resuelve con esa lista |
 | `--mode plan` | Según la documentación, solo herramientas de lectura. En modo no interactivo **no impide editar** (comprobado) y a veces prepara un plan en lugar de responder |
 | `--mode accept-edits` | Aprueba crear y editar archivos. Sin `--mode`, agy también edita en modo no interactivo (comprobado) |
 | `--sandbox` | Restringe la terminal al sandbox del sistema |
@@ -36,11 +36,13 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11) y con la documentación ofic
 
 - **Archivos:** dentro del espacio de trabajo (el directorio actual más cada `--add-dir`), agy lee y escribe sin preguntar, **en cualquier modo**. Las ediciones caen en los archivos reales del proyecto. Ningún flag garantiza la solo lectura: el script lo pide en el mensaje y comprueba después qué archivos cambiaron.
 - **Terminal:** se deniega sin preguntar. agy sale con código 0, `status` `SUCCESS`, `response` vacío, `denied_actions` y un aviso en la salida de errores. El script lo clasifica como `incompleto`.
+- **MCP:** sin regla, toda llamada a una herramienta MCP se deniega igual que la terminal (`denied_actions: [{action: "mcp", display_name: "CallMcpTool"}]`). Se permite con `mcp(servidor/herramienta)` en `permissions.allow`.
+- **Una sola denegación vacía toda la respuesta,** aunque otras llamadas hayan funcionado. Para probar permisos, haz una llamada por encargo.
 - **Reglas:** se pueden permitir comandos en `~/.gemini/antigravity-cli/settings.json`, con `"permissions": {"allow": ["command(git status)"]}`. La prioridad es deny > ask > allow, y en Windows un comando con subcomandos necesita `regex:`. Cambiar esa configuración es decisión del usuario.
 
 ## Contexto que agy carga por sí solo
 
-`AGENTS.md`, `GEMINI.md` y `.agents/rules/*.md` del proyecto, y `~/.gemini/GEMINI.md`. **No carga `CLAUDE.md`** (comprobado): por eso la plantilla del encargo le pide leerlo.
+`AGENTS.md`, `GEMINI.md` y `.agents/rules/*.md` del proyecto, y `~/.gemini/GEMINI.md`. **No carga `CLAUDE.md`** (comprobado): por eso la plantilla del encargo le pide leerlo. También carga las skills de `~/.gemini/config/skills/` y los servidores MCP de `~/.gemini/config/mcp_config.json` (comprobado el 2026-10-12).
 
 ## Trampas
 
@@ -56,3 +58,7 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11) y con la documentación ofic
 | Con varias carpetas en el espacio de trabajo, una ruta relativa puede resolverse en la equivocada | El encargo dice la ruta absoluta del proyecto y que las rutas son relativas a ella |
 | Varios agy a la vez en el mismo proyecto ven los cambios a medio hacer de los otros | En paralelo, cada encargo de edición toca archivos distintos |
 | Sin sesión iniciada, agy falla con «authentication required» | El usuario abre `agy` una vez de forma interactiva |
+| agy lee secretos del espacio de trabajo (`.dev.vars`, `.env`) aunque el encargo lo prohíba (comprobado) | El script se detiene con `secretos`; delega desde una carpeta sin ellos o con el permiso del usuario |
+| Los modelos cambian sin aviso: un nombre que ayer funcionaba da «invalid model selection» | El script resuelve alias con `agy models` y, con `--respaldo`, salta al siguiente |
+| En una revisión grande, agy gasta todo `--print-timeout` razonando y responde vacío | Pide un máximo de hallazgos; rescata la conversación con «entrega ya lo que tengas» |
+| Con `--mode accept-edits`, una vez agy quedó `incompleto` por `read_file` denegado, sin decir qué archivo; en modo lectura, la misma carpeta funcionó (causa sin confirmar) | Da rutas dentro de `--cwd`; si se repite, haz tú la edición |
