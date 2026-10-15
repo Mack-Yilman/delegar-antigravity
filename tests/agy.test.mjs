@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +26,8 @@ const falso = join(repo, 'tests', 'fake-agy.mjs');
 
 // Un proyecto, una carpeta de encargo y una caché de modelos nuevos en cada prueba.
 function preparar({ git = false } = {}) {
-  const base = mkdtempSync(join(tmpdir(), 'agy-prueba-'));
+  // En el runner de Windows, tmpdir() da la ruta corta 8.3 (RUNNER~1) y el script usa la larga (realpath).
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'agy-prueba-')));
   const proyecto = join(base, 'proyecto');
   const carpeta = join(base, 'encargo');
   mkdirSync(join(proyecto, 'src'), { recursive: true });
