@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { VECINOS, resolverModelo } from '../skills/delegar-antigravity/scripts/agy.mjs';
+import { VECINOS, VERSION, resolverModelo } from '../skills/delegar-antigravity/scripts/agy.mjs';
 import { LISTA_1210 } from './listas-modelos.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -104,6 +104,19 @@ test('SKILL.md no fija modelos con versión y sus alias se resuelven con la list
   for (const a of alias) assert.ok(resolverModelo(a, LISTA_1210).slug, `alias sin resolver con la lista del 12/10: ${a}`);
 });
 
+test('la plantilla del encargo prohíbe con fuerza la terminal y la web, y no recorta el entregable de lectura', () => {
+  // Uso real: con «no uses la terminal», Flash la pidió igual y la respuesta quedó vacía; una URL denegada, lo mismo.
+  const plantilla = cuerpo.match(/```markdown\n(# Encargo[\s\S]*?)```/)?.[1];
+  assert.ok(plantilla, 'SKILL.md debe tener la plantilla del encargo en un bloque markdown');
+  assert.match(plantilla, /\*\*Terminal: PROHIBIDA\.\*\*/);
+  assert.match(plantilla, /\*\*Web: PROHIBIDA\.\*\*/);
+  assert.match(plantilla, /VACÍA/);
+  // En lectura, la respuesta final es el entregable: el límite de palabras solo vale en edición.
+  const respuesta = plantilla.slice(plantilla.indexOf('## Respuesta final'));
+  assert.match(respuesta, /Solo en modo edición/);
+  assert.match(plantilla, /Modo lectura: tu respuesta final ES el entregable/);
+});
+
 test('la tabla de respaldo de modelos.md es la del script', () => {
   const modelos = leer('skills', carpetaSkill, 'references', 'modelos.md');
   const tabla = {};
@@ -134,9 +147,11 @@ test('la licencia es CC BY-NC-ND 4.0 a nombre de Mack Chirinos en todas partes',
   assert.equal(paquete.author, 'Mack Chirinos');
 });
 
-test('la versión de package.json es la primera del CHANGELOG', () => {
+test('la versión de package.json es la primera del CHANGELOG y la que anota el script', () => {
   const { version } = JSON.parse(leer('package.json'));
   assert.equal(leer('CHANGELOG.md').match(/^## (\d+\.\d+\.\d+)/m)?.[1], version);
+  // El registro de incidencias guarda la versión: debe ser la publicada.
+  assert.equal(VERSION, version);
 });
 
 test('el instalador de PowerShell apunta a la skill, copia todos sus archivos y no lleva BOM', () => {

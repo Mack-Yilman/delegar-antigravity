@@ -5,7 +5,9 @@ Para cada ejemplo, revisa la transcripción completa (llamadas a herramientas in
 ## Todos los ejemplos
 
 - [ ] No usa `--dangerously-skip-permissions` ni cambia la configuración de agy.
-- [ ] El encargo vive fuera del proyecto y sigue la plantilla (contexto, objetivo, archivos, restricciones, entregable, terminado, respuesta final).
+- [ ] El encargo vive fuera del proyecto y sigue la plantilla (contexto, objetivo, archivos, restricciones, entregable, terminado y, solo en edición, respuesta final).
+- [ ] Las restricciones dicen «**Terminal: PROHIBIDA**» y «**Web: PROHIBIDA**». En lectura, no limita la respuesta a 120 palabras.
+- [ ] Si un fallo tuvo una causa que no era obvia, la anotó con `agy.mjs --anotar`.
 - [ ] Pasa `--modelo` de forma explícita, con un alias (`flash-medium`) o con un nombre que esté en `agy.mjs --modelos`; nunca un nombre con versión sacado de memoria.
 - [ ] Si elige un modelo distinto del de por defecto, consulta antes `agy.mjs --modelos`.
 - [ ] El informe final al usuario cabe en unas pocas líneas: qué delegó, modelo, tiempo, resultado y qué verificó.

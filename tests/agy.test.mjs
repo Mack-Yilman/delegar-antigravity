@@ -2,17 +2,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   MODELO_POR_DEFECTO,
+  VERSION,
+  buscarSecretos,
   cadenaRespaldo,
   clasificar,
   construirArgs,
+  ejecutar,
   limpiarEnlaces,
   resolverModelo,
+  resumirIncidencias,
 } from '../skills/delegar-antigravity/scripts/agy.mjs';
 import { LISTA_1110, LISTA_1210, LISTA_FUTURA } from './listas-modelos.mjs';
 
@@ -22,7 +26,8 @@ const falso = join(repo, 'tests', 'fake-agy.mjs');
 
 // Un proyecto, una carpeta de encargo y una caché de modelos nuevos en cada prueba.
 function preparar({ git = false } = {}) {
-  const base = mkdtempSync(join(tmpdir(), 'agy-prueba-'));
+  // En el runner de Windows, tmpdir() da la ruta corta 8.3 (RUNNER~1) y el script usa la larga (realpath).
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'agy-prueba-')));
   const proyecto = join(base, 'proyecto');
   const carpeta = join(base, 'encargo');
   mkdirSync(join(proyecto, 'src'), { recursive: true });
@@ -38,7 +43,15 @@ function preparar({ git = false } = {}) {
   }
   const encargo = join(carpeta, 'encargo.md');
   writeFileSync(encargo, 'Encargo de prueba.\n');
-  return { base, proyecto, carpeta, encargo, cache: join(base, 'cache'), registro: join(base, 'registro.jsonl') };
+  return {
+    base,
+    proyecto,
+    carpeta,
+    encargo,
+    cache: join(base, 'cache'),
+    registro: join(base, 'registro.jsonl'),
+    incidencias: join(base, 'incidencias', 'incidencias.jsonl'),
+  };
 }
 
 function correr(p, escenario, extra = [], env = {}, { cwd = p.proyecto, encargo = p.encargo } = {}) {
@@ -50,6 +63,8 @@ function correr(p, escenario, extra = [], env = {}, { cwd = p.proyecto, encargo 
       ...process.env,
       AGY_BIN: falso,
       DELEGAR_AGY_CACHE: p.cache,
+      // Nunca el registro real del usuario.
+      DELEGAR_AGY_INCIDENCIAS: p.incidencias,
       FAKE_AGY_ESCENARIO: escenario,
       FAKE_AGY_REGISTRO: p.registro,
       ...env,
@@ -277,6 +292,131 @@ test('agy: con la carpeta del encargo como --cwd, sus propios archivos no cuenta
   }
 });
 
+test('agy: editar el encargo o la corrección mientras agy trabaja no es «edito_en_lectura»', () => {
+  // Pasó al reforzar el encargo de varias tareas en paralelo: el orquestador escribe esos archivos, no agy.
+  for (const git of [false, true]) {
+    const p = preparar({ git });
+    const { resumen } = correr(p, 'toca_encargo', [], {}, { cwd: p.carpeta });
+    assert.equal(resumen.estado, 'ok', `git: ${git}`);
+    assert.deepEqual(resumen.archivos, [], `git: ${git}`);
+    const correccion = join(p.carpeta, 'correccion.md');
+    writeFileSync(correccion, 'Entrega ya.\n');
+    const { resumen: r2 } = correr(p, 'toca_encargo', ['--conversacion', 'abc'], {}, { encargo: correccion });
+    assert.equal(r2.estado, 'ok', `corrección, git: ${git}`);
+  }
+});
+
+test('agy: vigila también la carpeta del encargo y las de --add-dir, fuera del --cwd', () => {
+  const p = preparar({ git: true });
+  const { codigo, resumen } = correr(p, 'edita_add_dir');
+  assert.equal(codigo, 2);
+  assert.equal(resumen.estado, 'edito_en_lectura');
+  assert.deepEqual(resumen.archivos, ['../encargo/plan.md']);
+  // En modo edición, lo que escribe ahí (p. ej., resultado.md) se lista y no es un error.
+  const p2 = preparar({ git: true });
+  const r2 = correr(p2, 'edita_add_dir', ['--modo', 'edicion']);
+  assert.equal(r2.resumen.estado, 'ok');
+  assert.deepEqual(r2.resumen.archivos, ['../encargo/plan.md']);
+});
+
+test('agy: historial.jsonl guarda una línea por ejecución, con el texto de stderr', () => {
+  // agy-salida.json y agy-errores.txt se sobrescriben: sin historial, el texto de un fallo se pierde.
+  const p = preparar();
+  correr(p, 'exito');
+  const { resumen } = correr(p, 'print_timeout', ['--conversacion', '297fcc3e-19ea-4601-a61a-67a132cb03c1']);
+  assert.equal(resumen.estado, 'timeout');
+  const lineas = readFileSync(join(p.carpeta, 'historial.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lineas.length, 2);
+  assert.equal(lineas[0].estado, 'ok');
+  assert.equal(lineas[0].modelo, 'gemini-3.8-flash-medium');
+  assert.equal(lineas[0].tokens, 65931);
+  assert.equal(lineas[1].estado, 'timeout');
+  assert.match(lineas[1].stderr, /print timeout after 6m40s/);
+  assert.equal(lineas[1].conversacion, '297fcc3e-19ea-4601-a61a-67a132cb03c1');
+  // El historial es del script: no cuenta como archivo tocado.
+  assert.deepEqual(resumen.archivos, []);
+});
+
+test('agy: con --respaldo, el historial anota cada intento', () => {
+  const p = preparar();
+  correr(p, 'cuota', ['--respaldo'], { FAKE_AGY_CUOTA: 'gemini-3.8-flash-medium' });
+  const lineas = readFileSync(join(p.carpeta, 'historial.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lineas.map((l) => l.estado), ['cuota', 'ok']);
+  assert.match(lineas[0].stderr, /RESOURCE_EXHAUSTED/);
+});
+
+// --- Registro central de incidencias ---
+
+const incidencias = (p) =>
+  existsSync(p.incidencias) ? readFileSync(p.incidencias, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+
+test('incidencias: una ejecución ok no se registra; una fallida sí, sin el encargo ni la respuesta', () => {
+  const p = preparar();
+  writeFileSync(p.encargo, 'Encargo con un dato confidencial inventado: DNI 40871234.\n');
+  correr(p, 'exito');
+  assert.deepEqual(incidencias(p), []);
+  correr(p, 'denegado');
+  const [i] = incidencias(p);
+  assert.equal(i.tipo, 'incidencia');
+  assert.equal(i.estado, 'incompleto');
+  assert.deepEqual(i.denegado, ['command']);
+  assert.equal(i.proyecto, 'proyecto');
+  assert.equal(i.version, VERSION);
+  assert.match(i.stderr, /auto-denied/);
+  assert.doesNotMatch(readFileSync(p.incidencias, 'utf8'), /40871234|Encargo con/);
+});
+
+test('incidencias: con respaldo que termina en ok, igual registra el error de cuota con su texto', () => {
+  const p = preparar();
+  correr(p, 'cuota', ['--respaldo'], { FAKE_AGY_CUOTA: 'gemini-3.8-flash-medium' });
+  const [i] = incidencias(p);
+  assert.equal(i.estado, 'ok');
+  assert.deepEqual(i.intentos.map((t) => t.estado), ['cuota', 'ok']);
+  assert.match(i.stderr, /RESOURCE_EXHAUSTED/);
+});
+
+test('incidencias: edito_en_lectura y un modelo inexistente también se registran', () => {
+  const p = preparar({ git: true });
+  correr(p, 'edita');
+  correr(p, 'exito', ['--modelo', 'gemini-3.1-pro-low'], lista(LISTA_1210));
+  assert.deepEqual(incidencias(p).map((i) => i.estado), ['edito_en_lectura', 'modelo_invalido']);
+});
+
+test('incidencias: --anotar guarda una lección y --incidencias las resume en markdown', () => {
+  const p = preparar();
+  correr(p, 'denegado');
+  const previo = correr(p, 'print_timeout');
+  const anotar = correr(p, 'exito', ['--anotar', 'Flash pidió la terminal porque el README nombraba comandos'], {}, { encargo: null });
+  assert.equal(anotar.codigo, 0);
+  assert.equal(anotar.resumen.estado, 'anotado');
+  // El registro del agy falso es acumulado: --anotar no agrega llamadas.
+  assert.equal(anotar.llamadas.length + anotar.consultas.length, previo.llamadas.length + previo.consultas.length, 'no necesita agy');
+  const leccion = incidencias(p).at(-1);
+  assert.equal(leccion.tipo, 'leccion');
+  assert.match(leccion.texto, /README/);
+  const r = spawnSync(process.execPath, [script, '--incidencias'], {
+    encoding: 'utf8',
+    env: { ...process.env, AGY_BIN: join(p.base, 'no-hay-agy.exe'), DELEGAR_AGY_INCIDENCIAS: p.incidencias },
+  });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /2 incidencias y 1 lecciones/);
+  assert.match(r.stdout, /\| incompleto \| 1 \|/);
+  assert.match(r.stdout, /\| timeout \| 1 \|/);
+  assert.match(r.stdout, /\| command \| 1 \|/);
+  assert.match(r.stdout, /print timeout after 6m40s/);
+  assert.match(r.stdout, /README nombraba comandos/);
+  assert.match(resumirIncidencias([], 'x.jsonl'), /Sin incidencias/);
+});
+
+test('agy: si no puede guardar la caché de modelos, sigue con la lista obtenida', () => {
+  // Con varias tareas en paralelo, Windows puede negar el reemplazo del archivo de caché.
+  const p = preparar();
+  mkdirSync(join(p.cache, 'modelos.json'), { recursive: true });
+  const { codigo, resumen } = correr(p, 'exito');
+  assert.equal(codigo, 0);
+  assert.equal(resumen.estado, 'ok');
+});
+
 test('agy: el modelo por defecto es explícito, nunca el de la configuración de agy', () => {
   const p = preparar();
   const { llamadas } = correr(p, 'exito');
@@ -302,6 +442,15 @@ test('agy: una acción denegada es «incompleto» aunque agy salga con 0', () =>
   assert.equal(codigo, 2);
   assert.equal(resumen.estado, 'incompleto');
   assert.deepEqual(resumen.denegado, ['command']);
+});
+
+test('agy: una URL denegada es «incompleto» y el detalle lo explica', () => {
+  const p = preparar();
+  const { codigo, resumen } = correr(p, 'denegado_url');
+  assert.equal(codigo, 2);
+  assert.equal(resumen.estado, 'incompleto');
+  assert.deepEqual(resumen.denegado, ['read_url']);
+  assert.match(resumen.detalle, /URL/);
 });
 
 test('agy: una respuesta vacía sin denegaciones también es «incompleto»', () => {
@@ -377,6 +526,44 @@ test('agy: el tiempo límite mata el árbol de procesos y no se cuelga', () => {
   assert.equal(vivo, false, 'el nieto de agy también debe terminar');
 });
 
+test('agy: si el proceso no muere tras matarlo, ejecutar vuelve igual y da su PID', async () => {
+  // Una vez el tiempo límite no cortó una tarea de 20 min. Se simula un cierre que no surte efecto.
+  const p = preparar();
+  const nieto = join(p.base, 'nieto.pid');
+  const previo = { escenario: process.env.FAKE_AGY_ESCENARIO, nieto: process.env.FAKE_AGY_NIETO };
+  process.env.FAKE_AGY_ESCENARIO = 'lento';
+  process.env.FAKE_AGY_NIETO = nieto;
+  const inicio = Date.now();
+  let r;
+  try {
+    r = await ejecutar(falso, [], {
+      cwd: p.proyecto,
+      salida: join(p.carpeta, 'salida.json'),
+      errores: join(p.carpeta, 'errores.txt'),
+      limiteMs: 500,
+      matar: () => {},
+      esperaTrasMatar: 500,
+    });
+  } finally {
+    for (const [clave, valor] of [['FAKE_AGY_ESCENARIO', previo.escenario], ['FAKE_AGY_NIETO', previo.nieto]]) {
+      if (valor === undefined) delete process.env[clave];
+      else process.env[clave] = valor;
+    }
+    if (r?.sinCerrar) process.kill(r.sinCerrar);
+    if (existsSync(nieto)) {
+      try {
+        process.kill(Number(readFileSync(nieto, 'utf8')));
+      } catch {}
+    }
+  }
+  assert.ok(Date.now() - inicio < 10000);
+  assert.equal(r.vencido, true);
+  assert.ok(r.sinCerrar > 0);
+  const c = clasificar({ ...r, json: null, stderr: '' });
+  assert.equal(c.estado, 'timeout');
+  assert.match(c.detalle, new RegExp(`proceso ${r.sinCerrar}`));
+});
+
 test('agy: la respuesta larga se recorta en el resumen pero queda completa en el archivo', () => {
   const p = preparar();
   const { resumen } = correr(p, 'largo', ['--max-respuesta', '300']);
@@ -420,6 +607,23 @@ test('agy: también revisa las carpetas de --add-dir y no bloquea los archivos d
   assert.equal(resumen.estado, 'secretos');
   assert.equal(resumen.secretos.length, 1);
   assert.match(resumen.secretos[0], /\.dev\.vars$/);
+});
+
+test('agy: detecta credenciales comunes además de .env y claves', () => {
+  const p = preparar();
+  const nombres = ['client_secret_123.apps.googleusercontent.com.json', 'service-account.json', '.netrc', '.pgpass', 'id_ecdsa', 'release.keystore'];
+  for (const n of nombres) writeFileSync(join(p.proyecto, n), 'inventado\n');
+  writeFileSync(join(p.proyecto, 'package.json'), '{}\n');
+  const { secretos, completa } = buscarSecretos([p.proyecto], p.proyecto);
+  assert.deepEqual(secretos, [...nombres].sort());
+  assert.equal(completa, true);
+});
+
+test('agy: si la búsqueda de secretos se detiene por el tope, lo avisa', () => {
+  const p = preparar();
+  for (let i = 0; i < 5; i++) writeFileSync(join(p.proyecto, `a${i}.txt`), '');
+  assert.equal(buscarSecretos([p.proyecto], p.proyecto, 3).completa, false);
+  assert.equal(buscarSecretos([p.proyecto], p.proyecto).completa, true);
 });
 
 test('agy: --seco informa los secretos sin bloquear', () => {
@@ -490,6 +694,14 @@ test('agy: clasificar reconoce los textos reales de agy', () => {
   for (const texto of ['RESOURCE_EXHAUSTED', 'Quota exceeded', 'rate limit reached', 'HTTP 429 Too Many Requests']) {
     assert.equal(clasificar({ json: { status: 'ERROR', error: texto }, stderr: '', codigo: 1 }).estado, 'cuota', texto);
   }
+  assert.equal(clasificar({ json: { status: 'ERROR', error: 'usage limit reached' }, stderr: '', codigo: 1 }).estado, 'cuota');
+  // Un límite de contexto no es cuota: cambiar de modelo con --respaldo no lo arregla.
+  for (const texto of ['context length limit exceeded', 'maximum context window exhausted', 'token limit exceeded']) {
+    assert.equal(clasificar({ json: { status: 'ERROR', error: texto }, stderr: '', codigo: 1 }).estado, 'error', texto);
+  }
+  // El texto real del print timeout (2026-10-14).
+  const pt = clasificar({ json: { status: 'SUCCESS', response: '' }, stderr: '[agy] print timeout after 6m40s with turn in progress; returning partial output', codigo: 0 });
+  assert.equal(pt.estado, 'timeout');
   // Una respuesta exitosa que menciona «quota» no es un error de cuota.
   assert.equal(clasificar({ json: { status: 'SUCCESS', response: 'la quota del API' }, stderr: '', codigo: 0 }).estado, 'ok');
   const mcp = clasificar({ json: { status: 'SUCCESS', response: '', denied_actions: [{ action: 'mcp' }] }, stderr: 'jetski: no output produced', codigo: 0 });

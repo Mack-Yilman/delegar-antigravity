@@ -59,6 +59,11 @@ Si toda la cadena falla por cuota, no sigas probando: haz la tarea tú o pregunt
 | Auditar un proyecto entero (12 hallazgos, 2 falsos) | Gemini 3.8 Flash High | ~570 s | 190 mil |
 | Revisar un diff de 880 líneas en 14 archivos | Gemini 3.8 Flash High | 900 s (agotó el tiempo) | 118 mil solo de razonamiento, sin respuesta |
 | Rescatar esa revisión con «entrega ya» en la misma conversación | Gemini 3.8 Flash High | 80 s | 522 mil (acumulado) |
+| Comparar ítem por ítem dos textos de unos 7 y 10 KB | Gemini 3.8 Flash High | Agotó el tiempo; el rescate también | 70 mil (32 mil de razonamiento), sin respuesta |
+| Revisar una parte de un documento largo (9 partes, 5 en paralelo) | Gemini 3.8 Flash High | 161–517 s | 71–192 mil por parte |
+| Segunda opinión sobre un diff de un plugin | Gemini 3.8 Flash High | 11–17 min | 245–364 mil (6 o 7 de 8 hallazgos reales) |
+
+**En paralelo:** 5 tareas Gemini a la vez no agotaron la cuota (2026-10-15). 5 tareas con Claude dentro de agy (unos 130 mil tokens cada una) sí la agotaron, y se repone en unas 5 h (2026-10-13). Por eso `--respaldo` nunca cae en Claude.
 
 Una tarea mínima dentro de un proyecto ya consume más de 60 mil tokens con Gemini, porque agy carga contexto del espacio de trabajo: no delegues tareas pequeñas. Sonnet Low gastó menos de la mitad en una tarea parecida, pero su cuota es más limitada. En las revisiones grandes, Flash High puede gastar todo el tiempo razonando: pide un máximo de hallazgos y usa `--timeout 1200`.
 
@@ -68,5 +73,5 @@ Una tarea mínima dentro de un proyecto ya consume más de 60 mil tokens con Gem
 |---|---|
 | Modelo inexistente | `invalid model selection (--model "…" --effort ""): model … is not recognized as a known model or custom model in settings` |
 | Terminal denegada | `jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.` |
-| Agotó su propio tiempo | `print timeout … returning partial output`, con `response` vacío; la conversación sigue disponible |
-| Cuota agotada | Aún no se ha visto. Cuando aparezca, copia aquí su texto exacto y comprueba que el script lo clasifique como `cuota` |
+| Agotó su propio tiempo | `[agy] print timeout after 6m40s with turn in progress; returning partial output` (2026-10-14, con `--print-timeout 400s`), con `response` vacío; la conversación sigue disponible |
+| Cuota agotada | Aún no se ha capturado el texto exacto. El 2026-10-13 se agotó la cuota Claude dentro de agy y el texto no se guardó. Desde la versión 0.3.0, `historial.jsonl` guarda el stderr de cada ejecución: cuando aparezca, cópialo aquí y comprueba que el script lo clasifique como `cuota` |

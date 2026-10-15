@@ -6,9 +6,10 @@ El agente actúa como orquestador:
 
 1. **Decide si conviene delegar.** Sí para leer o resumir muchos archivos, borradores largos, cambios mecánicos en varios archivos, búsquedas amplias o una segunda opinión. No para tareas pequeñas, datos confidenciales ni acciones que requieren tu autorización.
 2. **Elige el modelo** con la lista vigente de `agy models`, porque Antigravity cambia los modelos sin aviso: Gemini Flash para lo mecánico y Gemini Pro para lo difícil, si está disponible (si no, Flash High). Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
-3. **Escribe el encargo** en un archivo fuera de tu repositorio, con una plantilla.
+3. **Escribe el encargo** en un archivo fuera de tu repositorio, con una plantilla que prohíbe a agy la terminal y la web, porque una sola petición le deja la respuesta vacía.
 4. **Ejecuta agy** con un script que devuelve un resumen de pocas líneas. La respuesta completa queda en un archivo.
 5. **Verifica** con el diff o las pruebas, corrige en la misma conversación si hace falta y te informa en pocas líneas.
+6. **Anota lo aprendido** en un registro central de incidencias, común a todos tus proyectos.
 
 ```text
 estado: ok
@@ -77,14 +78,21 @@ node skills/delegar-antigravity/scripts/agy.mjs --encargo encargo.md --cwd <proy
 | `--timeout <s>` | Tiempo límite, por defecto 600; usa 1200 para revisiones grandes |
 | `--formato json` | Resumen en JSON en lugar de texto |
 | `--seco` | Muestra el comando sin ejecutarlo |
+| `--anotar "<lección>"` | Guarda en el registro central la causa de un fallo y cómo se resolvió |
+| `--incidencias` | Resume en markdown el registro central: qué falla, con qué modelo y qué se aprendió |
 
 Códigos de salida: `0` ok, `2` incompleto (acción denegada o respuesta vacía) o archivos editados en una tarea de lectura, `3` cuota agotada, `4` secretos en el espacio de trabajo y `1` otros errores.
 
 La lista de `agy models` tarda unos 12 s, así que el script la guarda unas horas en la carpeta temporal y la refresca si agy rechaza un modelo (o con `--refrescar-modelos`).
 
+**Lo que queda guardado:**
+
+- En la carpeta del encargo: `respuesta.md` con la respuesta completa, `agy-salida.json` y `agy-errores.txt` de la última ejecución, y `historial.jsonl` con una línea por ejecución.
+- En `~/.delegar-antigravity/incidencias.jsonl`: un registro central, fuera de tus proyectos, de cada ejecución que no terminó en `ok` y de las lecciones anotadas con `--anotar`. Guarda el estado, el modelo, las acciones denegadas y el texto de error de agy, nunca el encargo ni la respuesta. Sirve para ver qué falla en todos tus proyectos y mejorar la skill. Puedes cambiar la ruta con la variable `DELEGAR_AGY_INCIDENCIAS`.
+
 ## Seguridad y privacidad
 
-- Lo que lee agy se envía a los servidores de Google, y agy puede leer cualquier archivo de su espacio de trabajo aunque el encargo se lo prohíba. La skill no delega datos de pacientes, datos personales, secretos ni credenciales sin tu permiso explícito, y el script se detiene solo si encuentra `.env`, `.dev.vars`, claves o credenciales.
+- Lo que lee agy se envía a los servidores de Google, y agy puede leer cualquier archivo de su espacio de trabajo aunque el encargo se lo prohíba. La skill no delega datos de pacientes, datos personales, secretos ni credenciales sin tu permiso explícito, y el script se detiene solo si encuentra `.env`, `.dev.vars`, claves o credenciales (también `client_secret*.json`, cuentas de servicio y `.netrc`). Si copias documentos a la carpeta del encargo, el agente te ofrece borrarla al terminar.
 - agy trabaja con la terminal bloqueada (`--sandbox`) y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
 - Cada delegación gasta la cuota de Antigravity, no la de tu agente.
 
