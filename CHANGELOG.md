@@ -1,5 +1,29 @@
 # Historial de versiones
 
+## 0.3.0 — 2026-10-15
+
+Corrige lo que salió al usar la skill en proyectos reales y lo que encontró una auditoría del repositorio.
+
+- **Registro central de incidencias:** el script anota en `~/.delegar-antigravity/incidencias.jsonl` cada ejecución que no termina en `ok` (también los errores de cuota que el respaldo resolvió), con el estado, el modelo, las acciones denegadas y el texto de error de agy, sin el encargo ni la respuesta. `--anotar "<lección>"` agrega la causa que encontró el agente, y `--incidencias` resume todo en markdown para mejorar la skill. Antes, los fallos quedaban repartidos en las notas de cada proyecto.
+- **`historial.jsonl` en la carpeta del encargo:** una línea por ejecución y por intento. `agy-errores.txt` se sobrescribe y el texto de un fallo se perdía.
+- **Plantilla del encargo:**
+  - «**Terminal: PROHIBIDA**» y «**Web: PROHIBIDA**» con su consecuencia: con «no uses la terminal», el modelo la pidió igual porque los archivos que leía nombraban comandos, y la respuesta quedó vacía; con una URL pasó lo mismo;
+  - en modo lectura, la respuesta final es el entregable, y el límite de 120 palabras solo vale en edición. Antes recortaba las listas de hallazgos;
+  - leer CLAUDE.md o AGENTS.md solo si la tarea toca código del proyecto.
+- **Cuándo no delegar:** las comparaciones exactas, palabra por palabra o campo por campo, van con un script. Un modelo de razonamiento agotó el tiempo en eso, y el rescate también.
+- **Archivos tocados:**
+  - editar `encargo.md` o `correccion.md` mientras agy trabaja ya no da un falso `edito_en_lectura`;
+  - ahora también vigila la carpeta del encargo y las de `--add-dir`.
+- **Tiempo límite garantizado:** si agy no muere al cerrarlo, el script vuelve igual a los 15 s con su PID. Una vez una tarea siguió más de 20 min.
+- **Secretos:** detecta también `client_secret*.json`, `service-account*.json`, `.netrc`, `.pgpass`, `id_ecdsa` y los almacenes de claves de Java, y avisa si la búsqueda se detuvo en el tope de archivos.
+- **Errores:**
+  - con varias tareas en paralelo, no poder guardar la caché de modelos ya no tumba el script;
+  - un error de límite de contexto ya no se toma por cuota;
+  - el script ya no cae si Node emite `error` y `exit` del mismo proceso;
+  - una URL denegada se explica en el `detalle`.
+- **Referencias:** el texto real del *print timeout*, tiempos de revisiones grandes y la cuota de Claude dentro de agy con 5 tareas en paralelo.
+- **CI** también en Windows, el sistema donde más se usa.
+
 ## 0.2.0 — 2026-10-12
 
 Antigravity quitó Gemini Pro y Flash 3.6–3.7 sin aviso, y la cadena de respaldo fija se quedó sin modelos. Esta versión deja de depender de nombres con versión y corrige lo que apareció en el uso real.

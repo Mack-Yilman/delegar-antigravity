@@ -1,6 +1,6 @@
 # Referencia de Antigravity CLI (agy) en modo no interactivo
 
-Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 y 12) y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
+Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 a 15) y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
 
 ## Flags útiles
 
@@ -37,6 +37,7 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 y 12) y con la documentación
 - **Archivos:** dentro del espacio de trabajo (el directorio actual más cada `--add-dir`), agy lee y escribe sin preguntar, **en cualquier modo**. Las ediciones caen en los archivos reales del proyecto. Ningún flag garantiza la solo lectura: el script lo pide en el mensaje y comprueba después qué archivos cambiaron.
 - **Terminal:** se deniega sin preguntar. agy sale con código 0, `status` `SUCCESS`, `response` vacío, `denied_actions` y un aviso en la salida de errores. El script lo clasifica como `incompleto`.
 - **MCP:** sin regla, toda llamada a una herramienta MCP se deniega igual que la terminal (`denied_actions: [{action: "mcp", display_name: "CallMcpTool"}]`). Se permite con `mcp(servidor/herramienta)` en `permissions.allow`.
+- **Web:** abrir una URL (`read_url`) también se deniega y vacía la respuesta (comprobado el 2026-10-13).
 - **Una sola denegación vacía toda la respuesta,** aunque otras llamadas hayan funcionado. Para probar permisos, haz una llamada por encargo.
 - **Reglas:** se pueden permitir comandos en `~/.gemini/antigravity-cli/settings.json`, con `"permissions": {"allow": ["command(git status)"]}`. La prioridad es deny > ask > allow, y en Windows un comando con subcomandos necesita `regex:`. Cambiar esa configuración es decisión del usuario.
 
@@ -52,6 +53,9 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 y 12) y con la documentación
 | Capturar la salida con una tubería: un proceso nieto puede retenerla y bloquear al orquestador | El script escribe la salida en archivos |
 | Pedirle que busque un archivo «en algún lugar»: recorre todo el disco | Da rutas relativas al proyecto en el encargo |
 | Un comodín en el encargo (`src/*.js`): agy intenta expandirlo con la terminal, se lo deniegan y la respuesta queda vacía o a medias (comprobado) | Lista cada archivo por su nombre; obtén la lista tú antes de escribir el encargo |
+| Los archivos que lee nombran comandos (un README, un CLAUDE.md, una guía con `node script.mjs …`): Flash High pidió la terminal aunque el encargo decía «no la uses», y perdió 161 s de trabajo (2026-10-15) | «**Terminal: PROHIBIDA.** … una sola petición deja VACÍA tu respuesta», más dónde están ya los resultados de esos comandos. Con ese texto, 8 de 8 ejecuciones terminaron `ok`. Si el archivo no es necesario, no se lo pases |
+| El encargo sugiere consultar una fuente en línea y agy abre la URL: denegada, respuesta vacía | «**Web: PROHIBIDA**» en el encargo; si necesita esa fuente, descárgala tú y pásala como archivo |
+| Comparar dos textos largos palabra por palabra: Flash High agotó el tiempo razonando, y el rescate «entrega ya» también (2026-10-14) | Un script determinista. agy sirve para juzgar las diferencias que el script encuentre |
 | Mensajes largos o con comillas como argumento en Windows | El mensaje solo apunta al archivo del encargo |
 | El modelo por defecto de agy puede ser un modelo Claude | El script pasa siempre `--model` |
 | La carpeta del proyecto no está entre las confiables de agy | No afecta al modo no interactivo (comprobado) |

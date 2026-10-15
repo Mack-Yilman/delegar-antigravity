@@ -20,6 +20,7 @@ Delegar ahorra cuando lo que agy va a leer o escribir es mucho mayor que lo que 
 | Buscar en todo un repositorio dónde se usa algo y explicarlo | Delega en modo lectura |
 | Una segunda opinión o una revisión de un diff, un plan o un texto | Delega en modo lectura, con otro modelo que el tuyo (ver «Revisiones y auditorías») |
 | Varias subtareas independientes a la vez | Delega cada una en paralelo, con su propio encargo; como máximo 5 a la vez |
+| Comparar textos palabra por palabra, o datos campo por campo, sin que falte nada | No delegues: un script determinista (un diff, una comparación por campo) es más rápido y fiable. Un modelo de razonamiento puede agotar el tiempo en esto |
 | Pequeña: menos de unos 3 archivos o una edición puntual | Hazla tú: el encargo costaría más que la tarea |
 | Depende de lo hablado en esta conversación o de tu criterio fino | Hazla tú, o resume ese contexto en el encargo si es corto |
 | Incluye datos de pacientes, datos clínicos, datos personales, secretos, `.env`, claves o credenciales | No delegues sin permiso explícito del usuario: lo que lee agy sale a los servidores de Google |
@@ -71,8 +72,9 @@ Usa esta plantilla y quita lo que no aplique:
 # Encargo
 
 ## Contexto
-Proyecto: <ruta absoluta>. Antes de empezar, lee CLAUDE.md, AGENTS.md o README.md
-de la raíz del proyecto si existen, para entender sus convenciones.
+Proyecto: <ruta absoluta>. Las rutas de abajo son relativas a ella.
+<Solo si la tarea toca código del proyecto: «Antes de empezar, lee CLAUDE.md o
+AGENTS.md de la raíz, si existen, para seguir sus convenciones.» (y ponlo en Archivos)>
 <2–4 líneas de contexto que agy no puede deducir de los archivos>
 
 ## Objetivo
@@ -84,25 +86,31 @@ Sin comodines como src/*.js: agy intentaría expandirlos con la terminal,
 que está denegada, y la tarea queda incompleta>
 
 ## Restricciones
+- **Terminal: PROHIBIDA.** No ejecutes ningún comando (ni node, ls, cat, git ni
+  scripts): una sola petición deja VACÍA tu respuesta y se pierde todo el trabajo.
+  <Si los archivos nombran comandos: «Sus resultados ya están en: <archivos>».>
+- **Web: PROHIBIDA.** No abras URL ni busques en internet: una URL denegada también
+  deja vacía tu respuesta. Trabaja solo con los archivos de la lista.
 - Lee solo los archivos de la lista; no busques otros.
-- No uses la terminal: no ejecutes comandos.
 - No toques archivos fuera de la lista, ni .env, claves, credenciales o datos personales.
 - No hagas commit, push ni borres archivos.
 <restricciones propias de la tarea>
 
 ## Entregable
-<qué produce. En modo lectura, va en la respuesta final.
-En modo edición, un entregable largo va en <carpeta del encargo>/resultado.md.
+<Modo lectura: tu respuesta final ES el entregable, completo y sin preámbulo.
+Modo edición: los archivos editados y, si hay un texto largo, <carpeta del encargo>/resultado.md.
 Si es una lista de hallazgos o puntos, pon un máximo: «como máximo 8, los más importantes primero»>
 
 ## Terminado cuando
 <criterio verificable: «las 12 funciones renombradas», «un resumen por archivo»>
 
 ## Respuesta final
-Responde en menos de 120 palabras: qué hiciste, qué archivos tocaste y qué dudas quedan.
+<Solo en modo edición: «Responde en menos de 120 palabras: qué hiciste, qué archivos
+tocaste y qué dudas quedan». En modo lectura, quita esta sección: un límite de palabras
+recortaría el entregable.>
 ```
 
-La terminal está denegada para agy: si la tarea necesita correr pruebas o comandos, córrelos tú después.
+La terminal y la web están denegadas para agy, y basta una petición para vaciar la respuesta. Si la tarea necesita correr pruebas o comandos, córrelos tú antes o después y pásale la salida en un archivo. Cualquier archivo que nombre comandos (un README, un CLAUDE.md, una guía) tienta al modelo a pedir la terminal: por eso la restricción va en mayúsculas y dice dónde están los resultados.
 
 ### 2. Ejecutar con el script
 
@@ -117,9 +125,9 @@ node <carpeta de esta skill>/scripts/agy.mjs --encargo <carpeta>/encargo.md --cw
 - `--esfuerzo low|medium|high` reemplaza el nivel que trae el nombre del modelo.
 - `--add-dir <carpeta>` da acceso a otra carpeta, `--esquema <archivo.json>` pide una respuesta estructurada y `--seco` muestra el comando sin ejecutarlo.
 
-El script cierra la entrada estándar, guarda la salida en archivos, corta el proceso si se pasa del tiempo y nunca usa `--dangerously-skip-permissions`. Si la tarea puede tardar más de un par de minutos, o lanzas varias en paralelo, ejecútalo en segundo plano si tu entorno lo permite y sigue con otra cosa mientras tanto.
+El script cierra la entrada estándar, guarda la salida en archivos, corta el proceso si se pasa del tiempo y nunca usa `--dangerously-skip-permissions`. Cada ejecución agrega una línea a `historial.jsonl` en la carpeta del encargo (modelo, estado, tiempo, tokens y el texto de error de agy): consúltalo si un fallo no se entiende, porque `agy-errores.txt` se sobrescribe en cada intento. Si la tarea puede tardar más de un par de minutos, o lanzas varias en paralelo, ejecútalo en segundo plano si tu entorno lo permite y sigue con otra cosa mientras tanto.
 
-**Para saber qué tocó agy,** el script compara los archivos antes y después. Con git, mira los archivos con cambios y los ignorados (como `CLAUDE.md` o `.env`). Sin git, compara las fechas de modificación de todo el árbol, y entonces también ve lo que cambie otro proceso, tú incluido. Por eso, delega en un proyecto con git, y no edites tú los mismos archivos mientras agy trabaja.
+**Para saber qué tocó agy,** el script compara los archivos antes y después. Con git, mira los archivos con cambios y los ignorados (como `CLAUDE.md` o `.env`). Sin git, compara las fechas de modificación de todo el árbol, y entonces también ve lo que cambie otro proceso, tú incluido. También vigila la carpeta del encargo y las de `--add-dir`, salvo `encargo.md` y `correccion.md`, que escribes tú. Por eso, delega en un proyecto con git, y no edites tú los archivos del proyecto mientras agy trabaja.
 
 En paralelo sobre el mismo proyecto, cada encargo de edición debe tocar archivos distintos, y las tareas de lectura pueden ver cambios a medio hacer de las otras. La lista de «archivos tocados» puede incluir cambios de otro encargo simultáneo: verifica con el diff.
 
@@ -144,10 +152,10 @@ Verifica sin releerlo todo: `git diff --stat` y el diff solo de lo que importa, 
 | Estado | Qué hacer |
 |---|---|
 | `ok` | Verifica y sigue |
-| `incompleto` | agy intentó algo denegado o no respondió; `detalle` dice qué. Una sola denegación deja vacía toda la respuesta. Terminal: quita esa necesidad del encargo. MCP: quita esa herramienta del encargo. Leer un archivo: da rutas dentro del espacio de trabajo. Luego continúa la conversación |
+| `incompleto` | agy intentó algo denegado o no respondió; `detalle` dice qué. Una sola denegación deja vacía toda la respuesta. Terminal o URL: refuerza la prohibición en el encargo y dale en un archivo lo que buscaba. MCP: quita esa herramienta del encargo. Leer un archivo: da rutas dentro del espacio de trabajo. Luego continúa la conversación |
 | `edito_en_lectura` | agy cambió archivos en una tarea de solo lectura. Revisa el diff de esos archivos y revierte lo que no se pidió, sin tocar cambios previos del usuario. Sin git, primero descarta que sean cambios tuyos |
 | `cuota` | Repite con `--respaldo` o con otro alias. Si todos fallan, hazlo tú o pregunta al usuario |
-| `timeout` | Si hay `conversación`, rescátala: escribe `correccion.md` pidiendo que entregue ya lo que tenga, sin leer más, y continúa con `--conversacion`. Si no, divide la tarea o sube `--timeout` |
+| `timeout` | Si hay `conversación`, rescátala una vez: escribe `correccion.md` pidiendo que entregue ya lo que tenga, sin leer más, y continúa con `--conversacion`. Si el rescate también vence, no insistas: divide la tarea, acota el entregable o hazla tú. Sin conversación, divide la tarea o sube `--timeout` |
 | `modelo_invalido` | El modelo no existe hoy: elige otro de `disponibles` o usa un alias |
 | `secretos` | El espacio de trabajo tiene secretos: pregunta al usuario antes de usar `--permitir-secretos` |
 | `auth` | Pide al usuario que abra `agy` una vez para iniciar sesión |
@@ -167,6 +175,18 @@ Delegué a Antigravity (gemini-3.8-flash-medium, 48 s) el renombrado en 14 archi
 Verifiqué el diff (14 archivos, solo renombres) y las pruebas pasan.
 ```
 
+Si copiaste documentos del usuario a la carpeta del encargo (secciones de un texto, código de otro proyecto), esa copia queda en el directorio temporal. Al terminar, ofrece borrar la carpeta.
+
+### 6. Anotar lo aprendido
+
+El script anota solo, en un registro central fuera de los proyectos (`~/.delegar-antigravity/incidencias.jsonl`), cada ejecución que no termina en `ok`: estado, modelo, acciones denegadas y el texto de error de agy. Nunca guarda el encargo ni la respuesta. Tú solo agregas la causa cuando la descubres y no es obvia, en una línea, sin datos del usuario:
+
+```bash
+node <carpeta de esta skill>/scripts/agy.mjs --anotar "<qué falló, por qué y qué lo resolvió>" --cwd <proyecto>
+```
+
+Por ejemplo: «Flash pidió la terminal porque el README del proyecto nombraba comandos; se resolvió dándole la salida en un archivo». No anotes lo que ya explica el `detalle` del resumen. Para ver qué falla más a menudo y qué se aprendió, en cualquier proyecto: `agy.mjs --incidencias`.
+
 ## Revisiones y auditorías
 
 Una revisión de un diff grande o de un proyecto entero es lo que más tarda y más tokens gasta. Además, el modelo de agy puede desconocer APIs o versiones recientes y señalar como error algo que es válido.
@@ -174,6 +194,7 @@ Una revisión de un diff grande o de un proyecto entero es lo que más tarda y m
 - Usa `--timeout 1200` y pide en el entregable un máximo de hallazgos, priorizados.
 - Lista solo los archivos que importan; para un diff, guarda el diff en un archivo de la carpeta del encargo y pásale ese archivo.
 - **Verifica cada hallazgo antes de aplicarlo:** lee el código señalado y, si el hallazgo depende de una API externa, confírmalo en su documentación. Descarta los falsos y dile al usuario cuántos hubo.
+- **Recalibra la gravedad:** los modelos rápidos tienden a inflarla y marcan una errata o un detalle de estilo como crítico. Asigna tú el nivel antes de informar.
 
 ## Seguridad
 

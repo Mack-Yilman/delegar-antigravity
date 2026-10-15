@@ -1,6 +1,7 @@
 // agy falso para las pruebas de scripts/agy.mjs. Imita las salidas reales de agy 1.3.3 (2026-10-11 y 12).
 // El escenario se elige con FAKE_AGY_ESCENARIO; cada llamada se anota en FAKE_AGY_REGISTRO (una línea JSON).
-//   exito, edita, edita_ignorado, denegado, vacio, modelo_invalido, json_roto, lento, auth, print_timeout
+//   exito, edita, edita_ignorado, edita_add_dir, toca_encargo, denegado, denegado_url, vacio, modelo_invalido,
+//   json_roto, lento, auth, print_timeout
 //   cuota: los modelos de FAKE_AGY_CUOTA (separados por comas) responden con error de cuota; el resto, éxito.
 // `agy models` responde con FAKE_AGY_MODELOS (separados por comas; por defecto, la lista del 2026-10-12).
 // Como el agy real, un modelo que no está en esa lista da «invalid model selection» en cualquier escenario.
@@ -86,7 +87,25 @@ switch (escenario) {
     break;
   case 'print_timeout':
     // agy agotó su propio --print-timeout razonando: responde vacío, pero la conversación sigue disponible.
-    salir(exito('', { duration_seconds: 900.2 }), 0, `warning: print timeout ${valor('--print-timeout')} reached, returning partial output`);
+    // Texto real del 2026-10-14 (--print-timeout 400s).
+    salir(exito('', { duration_seconds: 417.3, num_turns: 2 }), 0, '[agy] print timeout after 6m40s with turn in progress; returning partial output');
+    break;
+  case 'denegado_url':
+    salir(
+      exito('', { duration_seconds: 5.1, denied_actions: [{ action: 'read_url', display_name: 'ReadUrl' }] }),
+      0,
+      'jetski: no output produced — a tool required the "read_url" permission that headless mode cannot prompt for, so it was auto-denied.',
+    );
+    break;
+  case 'toca_encargo':
+    // Simula al orquestador reforzando el encargo mientras agy trabaja: el archivo de entrada cambia.
+    appendFileSync(valor('-p').match(/Lee el archivo (.+?) y cumple/)[1], '- Terminal: PROHIBIDA.\n');
+    salir(exito('Listo.\n'));
+    break;
+  case 'edita_add_dir':
+    // Escribe en la carpeta del encargo (llega como --add-dir), fuera del --cwd.
+    writeFileSync(join(valor('--add-dir'), 'plan.md'), 'plan que nadie pidió\n');
+    salir(exito('Dejé un plan.\n'));
     break;
   case 'modelo_invalido':
     invalido();

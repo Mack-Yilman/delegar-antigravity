@@ -6,10 +6,14 @@
 //                [--add-dir <carpeta>]... [--respaldo] [--permitir-secretos] [--refrescar-modelos]
 //                [--max-respuesta <n>] [--formato texto|json] [--seco]
 //   node agy.mjs --modelos [--refrescar-modelos] [--formato texto|json]
+//   node agy.mjs --anotar "<lección: causa y solución>" [--cwd <proyecto>]
+//   node agy.mjs --incidencias [--formato texto|json]
+// Registro central: ~/.delegar-antigravity/incidencias.jsonl (o DELEGAR_AGY_INCIDENCIAS).
 // Códigos de salida: 0 ok; 2 incompleto o edito_en_lectura; 3 cuota agotada; 4 secretos en el espacio de trabajo;
 // 1 otro error.
 import { spawn, spawnSync } from 'node:child_process';
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -152,8 +156,13 @@ async function obtenerModelos(bin, { refrescar = false } = {}) {
   if (modelos.length) {
     const fecha = Date.now();
     const temporal = `${archivo}.${process.pid}`;
-    writeFileSync(temporal, JSON.stringify({ bin, fecha, modelos }));
-    renameSync(temporal, archivo);
+    // Con varias delegaciones en paralelo, Windows puede negar el reemplazo (EPERM, EBUSY): la caché es opcional.
+    try {
+      writeFileSync(temporal, JSON.stringify({ bin, fecha, modelos }));
+      renameSync(temporal, archivo);
+    } catch {
+      rmSync(temporal, { force: true });
+    }
     return { modelos, fecha, origen: 'agy models' };
   }
   if (cache) {
@@ -184,7 +193,8 @@ const CODIGOS = { ok: 0, seco: 0, modelos: 0, incompleto: 2, edito_en_lectura: 2
 
 // Textos con los que agy (o el servicio detrás) avisa de cada problema. El de cuota aún no se ha visto en
 // real: cuando aparezca, copia su texto en references/modelos.md y ajusta CUOTA si no coincide.
-const CUOTA = /quota|rate.?limit|resource.?exhausted|\b429\b|too many requests|usage limit|limit (?:reached|exceeded)|exhausted|(?:insufficient|no|out of) credits/i;
+// Sin «limit exceeded» ni «exhausted» sueltos: un límite de contexto no es cuota y cambiar de modelo no lo arregla.
+const CUOTA = /quota|rate.?limit|resource.?exhausted|\b429\b|too many requests|(?:usage|request) limit|(?:insufficient|no|out of) credits/i;
 const AUTH = /authentication required|not authenticated|unauthenticated|log ?in required|please (?:log ?in|sign ?in)/i;
 const DENEGADO = /auto-denied|soft[- ]?denied/i;
 const PRINT_TIMEOUT = /print.?timeout/i;
@@ -192,6 +202,7 @@ const EXPLICA_DENEGADO = {
   command: 'la terminal (agy no puede ejecutar comandos: quita esa necesidad del encargo y córrelos tú)',
   mcp: 'una herramienta MCP (sin regla mcp(servidor/herramienta) en permissions.allow: quítala del encargo o pide al usuario que la permita)',
   read_file: 'leer un archivo (quizá fuera del espacio de trabajo: da rutas dentro de --cwd o agrega la carpeta con --add-dir)',
+  read_url: 'abrir una URL (prohíbe la web en el encargo y dale el contenido en un archivo)',
 };
 
 export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600, esfuerzo, conversacion, esquema, addDirs = [], cwd }) {
@@ -215,9 +226,12 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600
   return args;
 }
 
-export function clasificar({ json, stderr = '', codigo, vencido = false, fallo }) {
+export function clasificar({ json, stderr = '', codigo, vencido = false, fallo, sinCerrar }) {
   if (vencido) {
-    return { estado: 'timeout', detalle: 'agy no terminó dentro del tiempo límite; se cerró su árbol de procesos. Divide la tarea o sube --timeout.' };
+    const cierre = sinCerrar
+      ? `no respondió al cierre: el proceso ${sinCerrar} puede seguir vivo, ciérralo a mano`
+      : 'se cerró su árbol de procesos';
+    return { estado: 'timeout', detalle: `agy no terminó dentro del tiempo límite; ${cierre}. Divide la tarea o sube --timeout.` };
   }
   if (fallo) return { estado: 'error', detalle: fallo };
   if (PRINT_TIMEOUT.test(stderr)) {
@@ -279,15 +293,23 @@ function matarArbol(pid) {
 
 // stdin cerrado (agy se cuelga si queda abierto) y salida a archivos, nunca a una tubería:
 // un nieto de agy que sobreviva podría retenerla y bloquear al orquestador.
-function ejecutar(bin, args, { cwd, salida, errores, limiteMs }) {
+// Si el proceso no muere tras matarlo (pasó una vez que el tiempo límite no cortó una tarea de 20 min),
+// se vuelve igual a los `esperaTrasMatar` ms: el orquestador nunca espera para siempre.
+export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = matarArbol, esperaTrasMatar = 15000 }) {
   return new Promise((listo) => {
     const out = openSync(salida, 'w');
     const err = openSync(errores, 'w');
     const [comando, previos] = /\.m?js$/i.test(bin) ? [process.execPath, [bin]] : [bin, []];
     let vencido = false;
+    let cerrado = false;
     let temporizador;
+    let ultimatum;
+    // Node puede emitir «error» y luego «exit»: cerrar dos veces los descriptores lanzaría EBADF.
     const cerrar = (resultado) => {
+      if (cerrado) return;
+      cerrado = true;
       clearTimeout(temporizador);
+      clearTimeout(ultimatum);
       closeSync(out);
       closeSync(err);
       listo({ vencido, ...resultado });
@@ -300,7 +322,8 @@ function ejecutar(bin, args, { cwd, salida, errores, limiteMs }) {
     });
     temporizador = setTimeout(() => {
       vencido = true;
-      matarArbol(hijo.pid);
+      matar(hijo.pid);
+      ultimatum = setTimeout(() => cerrar({ sinCerrar: hijo.pid }), esperaTrasMatar);
     }, limiteMs);
     hijo.on('error', (e) => cerrar({ fallo: e.message }));
     hijo.on('exit', (codigo) => cerrar({ codigo }));
@@ -312,11 +335,14 @@ function ejecutar(bin, args, { cwd, salida, errores, limiteMs }) {
 const IGNORADAS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next']);
 const TOPE_ARCHIVOS = 20000;
 // Lo que el script escribe junto al encargo: no son cambios de agy.
-const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md'];
+const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'historial.jsonl'];
+// Lo que escribe el orquestador para agy. Editarlo mientras agy trabaja (p. ej., reforzar el encargo de varias
+// tareas en paralelo) daba un falso edito_en_lectura.
+const ENTRADAS = ['encargo.md', 'correccion.md'];
 
 // Recorre una carpeta sin entrar en IGNORADAS. `visitar` devuelve false en una carpeta para no entrar en ella.
 // Devuelve false si se pasó del tope de archivos.
-function recorrer(base, visitar) {
+function recorrer(base, visitar, tope = TOPE_ARCHIVOS) {
   const pendientes = [''];
   let archivos = 0;
   while (pendientes.length) {
@@ -332,7 +358,7 @@ function recorrer(base, visitar) {
       if (e.isDirectory()) {
         if (!IGNORADAS.has(e.name) && visitar(ruta, e) !== false) pendientes.push(ruta);
       } else if (e.isFile()) {
-        if (++archivos > TOPE_ARCHIVOS) return false;
+        if (++archivos > tope) return false;
         visitar(ruta, e);
       }
     }
@@ -341,14 +367,17 @@ function recorrer(base, visitar) {
 }
 
 // agy lee cualquier archivo del espacio de trabajo aunque el encargo lo prohíba (leyó un .dev.vars el 12/10).
-const SECRETO = /^(?:\.env(?:\..+)?|\.dev\.vars(?:\..+)?|.+\.(?:key|pem|p12|pfx|token)|credenciales.*|credentials.*|id_rsa|id_ed25519)$/i;
+const SECRETO =
+  /^(?:\.env(?:\..+)?|\.dev\.vars(?:\..+)?|.+\.(?:key|pem|p12|pfx|token|jks|keystore)|credenciales.*|credentials.*|client_secret.*\.json|service[-_]?account.*\.json|\.netrc|\.pgpass|id_(?:rsa|dsa|ecdsa|ed25519))$/i;
 const CARPETA_SECRETA = /^(?:secrets|secretos)$/i;
 const EJEMPLO = /\.(?:example|sample|template|ejemplo)$/i;
 
-function buscarSecretos(carpetas, cwd) {
+// Devuelve los secretos hallados y si la búsqueda recorrió todo (se detiene en TOPE_ARCHIVOS por carpeta).
+export function buscarSecretos(carpetas, cwd, tope = TOPE_ARCHIVOS) {
   const hallados = new Set();
+  let completa = true;
   for (const carpeta of carpetas) {
-    recorrer(carpeta, (ruta, e) => {
+    const entera = recorrer(carpeta, (ruta, e) => {
       const relativa = () => relative(cwd, join(carpeta, ruta)).replace(/\\/g, '/');
       if (e.isDirectory()) {
         if (!CARPETA_SECRETA.test(e.name)) return true;
@@ -356,15 +385,30 @@ function buscarSecretos(carpetas, cwd) {
         return false;
       }
       if (SECRETO.test(e.name) && !EJEMPLO.test(e.name)) hallados.add(relativa());
-    });
+    }, tope);
+    if (!entera) completa = false;
   }
-  return [...hallados].sort();
+  return { secretos: [...hallados].sort(), completa };
 }
 
-// Fecha de modificación de cada archivo, para saber qué tocó agy. Con git, los archivos con cambios y los
-// ignorados (CLAUDE.md, .env); sin git, todo el árbol hasta un tope (si lo supera, no se sabe).
-function fotoArchivos(cwd) {
-  return fotoGit(cwd) ?? fotoArbol(cwd);
+const dentroDe = (base, ruta) => {
+  const rel = relative(base, ruta);
+  return !rel.startsWith('..') && !isAbsolute(rel);
+};
+
+// Fecha de modificación de cada archivo, para saber qué tocó agy. En el --cwd: con git, los archivos con cambios
+// y los ignorados (CLAUDE.md, .env); sin git, todo el árbol hasta un tope (si lo supera, no se sabe). Además,
+// el árbol de cada carpeta extra (la del encargo y las de --add-dir) que quede fuera: agy también escribe ahí.
+function fotoArchivos(cwd, extras = []) {
+  const principal = fotoGit(cwd) ?? fotoArbol(cwd);
+  if (!principal) return null;
+  const fotos = [principal];
+  for (const dir of extras) {
+    if (fotos.some((f) => dentroDe(f.base, dir))) continue;
+    const foto = fotoArbol(dir);
+    if (foto) fotos.push(foto);
+  }
+  return fotos;
 }
 
 function fotoArbol(cwd) {
@@ -403,11 +447,21 @@ function fotoGit(cwd) {
   return { base, git: true, mapa };
 }
 
-function archivosTocados(antes, despues, propios) {
-  if (!antes || !despues) return null;
-  const excluir = new Set(propios.map((p) => relative(antes.base, p).replace(/\\/g, '/')));
-  const rutas = new Set([...antes.mapa.keys(), ...despues.mapa.keys()]);
-  return [...rutas].filter((r) => !excluir.has(r) && antes.mapa.get(r) !== despues.mapa.get(r)).sort();
+// Rutas relativas a la base del --cwd; las de carpetas extra salen como «../encargo/resultado.md».
+function archivosTocados(antes, despues, excluir) {
+  if (!antes || !despues || antes.length !== despues.length) return null;
+  const clave = (ruta) => (process.platform === 'win32' ? resolve(ruta).toLowerCase() : resolve(ruta));
+  const excluidos = new Set(excluir.map(clave));
+  const tocados = [];
+  antes.forEach((a, i) => {
+    const d = despues[i];
+    for (const r of new Set([...a.mapa.keys(), ...d.mapa.keys()])) {
+      const absoluta = join(a.base, r);
+      if (excluidos.has(clave(absoluta)) || a.mapa.get(r) === d.mapa.get(r)) continue;
+      tocados.push(relative(antes[0].base, absoluta).replace(/\\/g, '/'));
+    }
+  });
+  return tocados.sort();
 }
 
 // --- Salida ---
@@ -491,6 +545,81 @@ function rutaReal(ruta) {
   }
 }
 
+// --- Registro central de incidencias ---
+// Los fallos de agy quedaban repartidos en los CLAUDE.md de cada proyecto y algunos se perdían. El script anota
+// solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
+// resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
+
+export const VERSION = '0.3.0';
+
+function archivoIncidencias() {
+  return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
+}
+
+function registrarIncidencia(entrada) {
+  const archivo = archivoIncidencias();
+  try {
+    mkdirSync(dirname(archivo), { recursive: true });
+    appendFileSync(archivo, JSON.stringify({ fecha: fechaLocal(Date.now()), version: VERSION, ...entrada }) + '\n');
+  } catch {}
+}
+
+export function leerIncidencias(archivo = archivoIncidencias()) {
+  let texto;
+  try {
+    texto = readFileSync(archivo, 'utf8');
+  } catch {
+    return [];
+  }
+  return texto
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((l) => {
+      try {
+        return [JSON.parse(l)];
+      } catch {
+        return [];
+      }
+    });
+}
+
+const contar = (valores) => {
+  const cuenta = {};
+  for (const v of valores) cuenta[v] = (cuenta[v] ?? 0) + 1;
+  return Object.entries(cuenta).sort((a, b) => b[1] - a[1]);
+};
+
+// Resumen en markdown para revisar qué falla y qué se aprendió.
+export function resumirIncidencias(entradas, archivo) {
+  const incidencias = entradas.filter((e) => e.tipo === 'incidencia');
+  const lecciones = entradas.filter((e) => e.tipo === 'leccion');
+  if (!entradas.length) return `Sin incidencias registradas en ${archivo}.`;
+  const lineas = [`## Incidencias de agy (${archivo})`, ''];
+  const fechas = entradas.map((e) => e.fecha).filter(Boolean).sort();
+  lineas.push(`${incidencias.length} incidencias y ${lecciones.length} lecciones, del ${fechas[0]} al ${fechas.at(-1)}.`, '');
+  const tabla = (titulo, filas) => {
+    if (!filas.length) return;
+    lineas.push(`| ${titulo} | Veces |`, '|---|---|', ...filas.map(([k, n]) => `| ${k} | ${n} |`), '');
+  };
+  tabla('Estado', contar(incidencias.flatMap((i) => (i.intentos ?? [{ estado: i.estado }]).map((t) => t.estado).filter((e) => e !== 'ok'))));
+  tabla('Modelo', contar(incidencias.map((i) => i.modelo).filter(Boolean)));
+  tabla('Acción denegada', contar(incidencias.flatMap((i) => i.denegado ?? [])));
+  tabla('Versión', contar(incidencias.map((i) => i.version).filter(Boolean)));
+  if (incidencias.length) {
+    lineas.push('### Últimas incidencias', '');
+    for (const i of incidencias.slice(-10)) {
+      const error = i.stderr ? ` · stderr: ${i.stderr.split('\n')[0].slice(0, 160)}` : '';
+      lineas.push(`- ${i.fecha} · ${i.proyecto ?? '?'} · ${i.estado} · ${i.modelo ?? '?'}${error}`);
+    }
+    lineas.push('');
+  }
+  if (lecciones.length) {
+    lineas.push('### Lecciones', '');
+    for (const l of lecciones) lineas.push(`- ${l.fecha} · ${l.proyecto ?? '?'}: ${l.texto}`);
+  }
+  return lineas.join('\n').trim();
+}
+
 // --- Programa ---
 
 async function listarModelos(bin, o) {
@@ -529,8 +658,23 @@ async function principal() {
       'max-respuesta': { type: 'string', default: '2000' },
       formato: { type: 'string', default: 'texto' },
       seco: { type: 'boolean', default: false },
+      anotar: { type: 'string' },
+      incidencias: { type: 'boolean', default: false },
     },
   });
+  if (o.anotar !== undefined) {
+    const texto = o.anotar.trim();
+    if (!texto) throw new Error('--anotar necesita el texto de la lección');
+    registrarIncidencia({ tipo: 'leccion', proyecto: basename(rutaReal(o.cwd)), texto: texto.slice(0, 1000) });
+    imprimir({ estado: 'anotado', detalle: `lección guardada en ${archivoIncidencias()}` }, o.formato);
+    return 0;
+  }
+  if (o.incidencias) {
+    const entradas = leerIncidencias();
+    if (o.formato === 'json') process.stdout.write(JSON.stringify(entradas, null, 2) + '\n');
+    else process.stdout.write(resumirIncidencias(entradas, archivoIncidencias()) + '\n');
+    return 0;
+  }
   let encargo, cwd, timeout, margen, maxRespuesta;
   if (!o.modelos) {
     if (!o.encargo) throw new Error('falta --encargo <archivo>');
@@ -572,7 +716,10 @@ async function principal() {
   };
 
   // Antes de gastar nada: agy podría leer los secretos aunque el encargo lo prohíba.
-  const secretos = buscarSecretos([...new Set([cwd, carpeta, ...addDirs])], cwd);
+  const { secretos, completa: busquedaCompleta } = buscarSecretos([...new Set([cwd, carpeta, ...addDirs])], cwd);
+  const avisoBusqueda = busquedaCompleta
+    ? null
+    : `la búsqueda de secretos se detuvo en ${TOPE_ARCHIVOS} archivos por carpeta: puede haber secretos sin detectar; revisa tú el espacio de trabajo o delega desde una carpeta más pequeña`;
   if (secretos.length && !o['permitir-secretos'] && !o.seco) {
     imprimir(
       {
@@ -598,8 +745,10 @@ async function principal() {
     await refrescar();
     pedido = resolverModelo(o.modelo, lista.modelos);
   }
-  const avisos = () => [lista.aviso, secretos.length && 'el espacio de trabajo tiene secretos y se permitió delegar igual'].filter(Boolean);
+  const avisos = () =>
+    [lista.aviso, avisoBusqueda, secretos.length && 'el espacio de trabajo tiene secretos y se permitió delegar igual'].filter(Boolean);
   const sinModelo = (detalle) => {
+    registrarIncidencia({ tipo: 'incidencia', proyecto: basename(cwd), modo: o.modo, pedido: o.modelo, estado: 'modelo_invalido', detalle });
     imprimir({ estado: 'modelo_invalido', detalle, disponibles: lista.modelos ?? undefined, avisos: avisos() }, o.formato);
     return 1;
   };
@@ -609,6 +758,7 @@ async function principal() {
 
   if (o.seco) {
     const args = construirArgs({ ...opciones, modelo: pedido.slug });
+    const avisosSeco = [lista.aviso, avisoBusqueda].filter(Boolean);
     imprimir(
       {
         estado: 'seco',
@@ -616,15 +766,17 @@ async function principal() {
         modelo: pedido.slug,
         ...extra,
         secretos: secretos.length ? secretos : undefined,
-        avisos: lista.aviso ? [lista.aviso] : undefined,
+        avisos: avisosSeco.length ? avisosSeco : undefined,
       },
       o.formato,
     );
     return 0;
   }
 
-  const antes = fotoArchivos(cwd);
+  const extras = [carpeta, ...addDirs];
+  const antes = fotoArchivos(cwd, extras);
   const intentos = [];
+  const registros = [];
   const probados = new Set();
   let pendientes = [pedido.slug, ...(o.respaldo ? cadenaRespaldo(pedido.slug, lista.modelos) : [])];
   let final;
@@ -648,6 +800,16 @@ async function principal() {
     const stderr = readFileSync(errores, 'utf8');
     final = { modelo, json, inicio, ...clasificar({ json, stderr, ...r }) };
     intentos.push({ modelo, estado: final.estado });
+    registros.push({
+      fecha: fechaLocal(inicio),
+      modelo,
+      estado: final.estado,
+      segundos: Math.round(json?.duration_seconds ?? (Date.now() - inicio) / 1000),
+      tokens: json?.usage?.total_tokens,
+      conversacion: json?.conversation_id || undefined,
+      denegado: final.denegado?.length ? final.denegado : undefined,
+      stderr: stderr.trim().slice(0, 500) || undefined,
+    });
     if (!o.respaldo) break;
     if (final.estado === 'modelo_invalido') {
       // La caché listaba un modelo que agy ya no tiene: se refresca y se rehace la cadena.
@@ -662,12 +824,38 @@ async function principal() {
   if (!final) return sinModelo('Ningún modelo de la cadena de respaldo está en agy models.');
 
   const { json } = final;
-  const despues = fotoArchivos(cwd);
-  const archivos = archivosTocados(antes, despues, PROPIOS.map((n) => join(carpeta, n)));
+  const despues = fotoArchivos(cwd, extras);
+  const excluir = [...PROPIOS, ...ENTRADAS].map((n) => join(carpeta, n)).concat(encargo);
+  const archivos = archivosTocados(antes, despues, excluir);
   if (o.modo === 'lectura' && archivos?.length) {
     final.estado = 'edito_en_lectura';
     final.detalle = 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.';
     intentos.at(-1).estado = final.estado;
+    registros.at(-1).estado = final.estado;
+  }
+  // Una línea por ejecución: agy-salida.json y agy-errores.txt se sobrescriben en cada intento y en cada
+  // continuación, y un fallo raro (cuota, cuelgue) no se repite a pedido.
+  try {
+    appendFileSync(join(carpeta, 'historial.jsonl'), registros.map((r) => JSON.stringify(r) + '\n').join(''));
+  } catch {}
+  // Al registro central va toda ejecución con algún intento fallido, aunque el respaldo haya terminado en ok
+  // (así se captura el texto real de un error de cuota).
+  const fallido = registros.find((r) => r.estado !== 'ok');
+  if (fallido) {
+    registrarIncidencia({
+      tipo: 'incidencia',
+      proyecto: basename(cwd),
+      modo: o.modo,
+      pedido: o.modelo,
+      modelo: final.modelo,
+      estado: final.estado,
+      intentos: intentos.length > 1 ? intentos : undefined,
+      segundos: registros.at(-1).segundos,
+      tokens: registros.at(-1).tokens,
+      denegado: fallido.denegado,
+      detalle: final.estado === 'ok' ? undefined : final.detalle?.slice(0, 300),
+      stderr: fallido.stderr?.slice(0, 300),
+    });
   }
   if (final.estado === 'modelo_invalido') await refrescar();
   const resumen = {
@@ -679,7 +867,7 @@ async function principal() {
     tokens: json?.usage?.total_tokens,
     conversacion: json?.conversation_id || undefined,
     archivos,
-    sin_git: antes && !antes.git ? true : undefined,
+    sin_git: antes && !antes[0].git ? true : undefined,
     denegado: final.denegado,
     detalle: final.detalle,
     disponibles: final.estado === 'modelo_invalido' ? lista.modelos ?? undefined : undefined,
