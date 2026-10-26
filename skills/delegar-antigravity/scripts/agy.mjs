@@ -5,12 +5,17 @@
 //                [--esfuerzo low|medium|high] [--timeout <s>] [--conversacion <id>] [--esquema <archivo.json>]
 //                [--add-dir <carpeta>]... [--respaldo] [--permitir-secretos] [--refrescar-modelos]
 //                [--max-respuesta <n>] [--formato texto|json] [--seco]
+//   node agy.mjs --carpeta <tema>   (crea una carpeta de encargo nueva y única, e imprime su ruta)
+//   node agy.mjs --lote <carpeta> [--paralelo <n≤5>] [--cwd <común>] [los mismos flags, salvo --encargo]
 //   node agy.mjs --modelos [--refrescar-modelos] [--formato texto|json]
 //   node agy.mjs --anotar "<lección: causa y solución>" [--cwd <proyecto>]
 //   node agy.mjs --incidencias [--formato texto|json]
-// Registro central: ~/.delegar-antigravity/incidencias.jsonl (o DELEGAR_AGY_INCIDENCIAS).
-// Códigos de salida: 0 ok; 2 incompleto o edito_en_lectura; 3 cuota agotada; 4 secretos en el espacio de trabajo;
-// 1 otro error.
+// Modelos: alias de gama (rapido-low… potente-high), de familia (flash-medium, argon-high) o nombre exacto.
+// Registro central: ~/.delegar-antigravity/incidencias.jsonl (o DELEGAR_AGY_INCIDENCIAS). Datos de agy (log/ y
+// brain/): ~/.gemini/antigravity-cli (o DELEGAR_AGY_HOME). Espera antes de reintentar un fallo transitorio:
+// DELEGAR_AGY_ESPERA segundos (60).
+// Códigos de salida: 0 ok; 2 incompleto, parcial, edito_en_lectura o un lote con fallos; 3 cuota agotada;
+// 4 secretos en el espacio de trabajo; 1 otro error.
 import { spawn, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
@@ -35,21 +40,29 @@ import { parseArgs } from 'node:util';
 // Antigravity cambia los modelos sin aviso (el 12/10 quitó Gemini Pro y Flash 3.6–3.7). Por eso el script no
 // fija versiones: lee `agy models` y resuelve alias como «flash-medium» a la versión más alta disponible.
 
-export const MODELO_POR_DEFECTO = 'flash-medium';
+export const MODELO_POR_DEFECTO = 'rapido-medium';
 const PREFERENCIA_SIN_NIVEL = ['medium', 'high', 'low'];
-// Si la familia pedida no aparece en `agy models`, se usa este alias en su lugar.
-const SUSTITUTOS = { pro: 'flash-high' };
-// Respaldo ante cuota o modelo inexistente: primero las versiones anteriores del mismo nivel y luego, en orden,
-// la versión más nueva de cada nivel vecino. Solo Gemini: la cuota Claude de Antigravity es más corta y se
-// reserva para cuando se pide.
+const NIVELES = ['low', 'medium', 'high'];
+// Gamas de Gemini: las familias cambian de nombre (Pro se fue y llegó Argon), así que la skill elige por gama.
+// Una familia nueva entra sola: es rápida si su nombre lo dice y potente en cualquier otro caso.
+const RAPIDA = /flash|lite|nano/;
+export const gama = (familia) => (RAPIDA.test(familia) ? 'rapido' : 'potente');
+const GAMAS = ['rapido', 'potente'];
+// Familias Gemini que ya existieron: si desaparecen, su alias pasa a su gama (pro-high → potente-high).
+const FAMILIAS_GEMINI = ['flash', 'pro', 'argon'];
+// Respaldo ante cuota, modelo inexistente, mudo o fallo transitorio: primero las versiones anteriores del mismo
+// modelo y luego, en orden, el mejor de cada gama y nivel vecinos. Solo Gemini: la cuota Claude de Antigravity es
+// más corta y se reserva para cuando se pide. Lo potente no baja a otro nivel potente: el 25/10, Argon High y
+// Medium se quedaron mudos el mismo día.
 export const VECINOS = {
-  'pro-high': ['pro-low', 'flash-high'],
-  'pro-low': ['flash-high'],
-  'flash-high': ['flash-medium'],
-  'flash-medium': ['flash-high', 'flash-low'],
-  'flash-low': ['flash-medium'],
+  'potente-high': ['rapido-high'],
+  'potente-medium': ['rapido-high'],
+  'potente-low': ['rapido-high'],
+  'rapido-high': ['rapido-medium'],
+  'rapido-medium': ['rapido-high', 'rapido-low'],
+  'rapido-low': ['rapido-medium'],
 };
-const ALIAS_COMUNES = ['flash-low', 'flash-medium', 'flash-high', 'pro-low', 'pro-high', 'sonnet-low', 'sonnet-medium', 'opus-medium', 'gpt-oss'];
+const ALIAS_FIJOS = [...GAMAS.flatMap((g) => NIVELES.map((n) => `${g}-${n}`)), 'pro-high', 'sonnet-low', 'sonnet-medium', 'opus-medium', 'gpt-oss'];
 const HORAS_CACHE = 6;
 
 // gemini-3.8-flash-high, claude-sonnet-5-5-low, gpt-oss-120b-medium.
@@ -79,9 +92,15 @@ function compararVersion(a, b) {
 }
 
 function mejor(alias, lista) {
+  const esGama = GAMAS.includes(alias.familia);
   const candidatos = lista
     .map(parsearModelo)
-    .filter((p) => p && p.familia === alias.familia && (!alias.nivel || p.nivel === alias.nivel));
+    .filter(
+      (p) =>
+        p &&
+        (esGama ? p.proveedor === 'gemini' && gama(p.familia) === alias.familia : p.familia === alias.familia) &&
+        (!alias.nivel || p.nivel === alias.nivel),
+    );
   candidatos.sort(
     (a, b) =>
       compararVersion(b.version, a.version) || PREFERENCIA_SIN_NIVEL.indexOf(a.nivel) - PREFERENCIA_SIN_NIVEL.indexOf(b.nivel),
@@ -95,11 +114,17 @@ export function resolverModelo(pedido, lista) {
   if (!lista) return { slug: null };
   const elegido = mejor(alias, lista);
   if (elegido) return { slug: elegido };
-  const sustituto = SUSTITUTOS[alias.familia];
-  const otro = sustituto && mejor(parsearAlias(sustituto), lista);
-  if (otro) {
-    const familia = alias.familia[0].toUpperCase() + alias.familia.slice(1);
-    return { slug: otro, nota: `sin ${familia} en agy models` };
+  const nombre = alias.familia[0].toUpperCase() + alias.familia.slice(1);
+  // Una familia Gemini que desapareció pasa a su gama, con el mismo nivel.
+  if (FAMILIAS_GEMINI.includes(alias.familia)) {
+    const deGama = { familia: gama(alias.familia), nivel: alias.nivel };
+    const otro = mejor(deGama, lista);
+    if (otro) return { slug: otro, nota: `sin ${nombre} en agy models: uso ${deGama.familia}-${alias.nivel ?? 'medium'}` };
+  }
+  // Sin ningún modelo potente, lo más cercano es el rápido con más razonamiento.
+  if (gama(alias.familia) === 'potente' && (FAMILIAS_GEMINI.includes(alias.familia) || alias.familia === 'potente')) {
+    const otro = mejor({ familia: 'rapido', nivel: 'high' }, lista);
+    if (otro) return { slug: otro, nota: `sin ${alias.familia === 'potente' ? 'modelos potentes' : nombre} en agy models: uso rapido-high` };
   }
   return { slug: null };
 }
@@ -113,7 +138,7 @@ export function cadenaRespaldo(slug, lista) {
     .filter((m) => m.familia === p.familia && m.nivel === p.nivel && compararVersion(m.version, p.version) < 0)
     .sort((a, b) => compararVersion(b.version, a.version))
     .map((m) => m.slug);
-  for (const vecino of VECINOS[`${p.familia}-${p.nivel}`] ?? []) {
+  for (const vecino of VECINOS[`${gama(p.familia)}-${p.nivel}`] ?? []) {
     const s = mejor(parsearAlias(vecino), gemini);
     if (s && s !== slug && !cadena.includes(s)) cadena.push(s);
   }
@@ -189,7 +214,7 @@ function agruparModelos(lista) {
 // --- Ejecución de agy ---
 
 const MODOS = { lectura: 'plan', edicion: 'accept-edits' };
-const CODIGOS = { ok: 0, seco: 0, modelos: 0, incompleto: 2, edito_en_lectura: 2, cuota: 3, secretos: 4 };
+const CODIGOS = { ok: 0, seco: 0, modelos: 0, incompleto: 2, edito_en_lectura: 2, parcial: 2, cuota: 3, secretos: 4 };
 
 // Textos con los que agy (o el servicio detrás) avisa de cada problema. El de cuota aún no se ha visto en
 // real: cuando aparezca, copia su texto en references/modelos.md y ajusta CUOTA si no coincide.
@@ -198,6 +223,13 @@ const CUOTA = /quota|rate.?limit|resource.?exhausted|\b429\b|too many requests|(
 const AUTH = /authentication required|not authenticated|unauthenticated|log ?in required|please (?:log ?in|sign ?in)/i;
 const DENEGADO = /auto-denied|soft[- ]?denied/i;
 const PRINT_TIMEOUT = /print.?timeout/i;
+// Fallos de la plataforma que pasan solos (vistos el 16/10 y el 20/10): reintentar suele bastar.
+// Sin «internal» ni «unavailable» sueltos: con /i atraparían trazas de Node (node:internal/…) y errores permanentes.
+const TRANSITORIO = /stream was interrupted|no capacity available|\bcode 50[0234]\b|internal error encountered/i;
+const SALIDA_LARGA = /output token limit/i;
+// En cli.log, el modelo abrió su llamada final y no devolvió nada en 5 min (Argon, 20/10 y 25/10).
+const MUDO = /stream idle timeout/i;
+const CONSEJO_SALIDA = ' Pide como máximo 6 hallazgos o puntos, en formato corto.';
 const EXPLICA_DENEGADO = {
   command: 'la terminal (agy no puede ejecutar comandos: quita esa necesidad del encargo y córrelos tú)',
   mcp: 'una herramienta MCP (sin regla mcp(servidor/herramienta) en permissions.allow: quítala del encargo o pide al usuario que la permita)',
@@ -226,7 +258,7 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600
   return args;
 }
 
-export function clasificar({ json, stderr = '', codigo, vencido = false, fallo, sinCerrar }) {
+export function clasificar({ json, stderr = '', codigo, vencido = false, fallo, sinCerrar, fallosLog = [] }) {
   if (vencido) {
     const cierre = sinCerrar
       ? `no respondió al cierre: el proceso ${sinCerrar} puede seguir vivo, ciérralo a mano`
@@ -234,7 +266,24 @@ export function clasificar({ json, stderr = '', codigo, vencido = false, fallo, 
     return { estado: 'timeout', detalle: `agy no terminó dentro del tiempo límite; ${cierre}. Divide la tarea o sube --timeout.` };
   }
   if (fallo) return { estado: 'error', detalle: fallo };
+  // Con un error o un corte, agy a veces deja la respuesta completa o casi (20/10 y 22/10).
+  const largo = json?.response?.trim().length ?? 0;
+  const parcial = (motivo, texto = '') => ({
+    estado: 'parcial',
+    detalle:
+      `agy terminó con «${motivo.split('\n')[0].slice(0, 160)}», pero dejó ${largo} caracteres en respuesta.md: puede estar completa. ` +
+      'Léela antes de reintentar; si está cortada, continúa con --conversacion pidiendo solo lo que falta.' +
+      (SALIDA_LARGA.test(texto) ? CONSEJO_SALIDA : ''),
+  });
   if (PRINT_TIMEOUT.test(stderr)) {
+    if (largo) return parcial('print timeout');
+    if (fallosLog.some((f) => MUDO.test(f))) {
+      return {
+        estado: 'modelo_mudo',
+        detalle:
+          'el modelo leyó los archivos pero su llamada final no devolvió nada («stream idle timeout» en cli.log) hasta agotar --print-timeout. El rescate con correccion.md no sirve en este fallo: cambia de modelo (con --respaldo el script ya lo hace) o acota mucho el encargo.',
+      };
+    }
     return {
       estado: 'timeout',
       detalle:
@@ -245,6 +294,7 @@ export function clasificar({ json, stderr = '', codigo, vencido = false, fallo, 
     const detalle = stderr.trim().slice(0, 400) || `agy salió con código ${codigo} sin JSON.`;
     if (AUTH.test(stderr)) return { estado: 'auth', detalle };
     if (CUOTA.test(stderr)) return { estado: 'cuota', detalle };
+    if (TRANSITORIO.test(stderr)) return { estado: 'transitorio', detalle };
     return { estado: stderr.trim() ? 'error' : 'json_invalido', detalle };
   }
   if (json.status !== 'SUCCESS') {
@@ -253,7 +303,11 @@ export function clasificar({ json, stderr = '', codigo, vencido = false, fallo, 
     if (/invalid model selection/i.test(texto)) return { estado: 'modelo_invalido', detalle };
     if (AUTH.test(texto)) return { estado: 'auth', detalle };
     if (CUOTA.test(texto)) return { estado: 'cuota', detalle };
-    return { estado: 'error', detalle };
+    if (largo) return parcial(texto || `status ${json.status}`, texto);
+    if (TRANSITORIO.test(texto)) {
+      return { estado: 'transitorio', detalle: `${detalle}\nFallo pasajero de la plataforma: reintenta en un minuto o usa --respaldo, que reintenta solo.` };
+    }
+    return { estado: 'error', detalle: detalle + (SALIDA_LARGA.test(texto) ? CONSEJO_SALIDA : '') };
   }
   const denegado = (json.denied_actions ?? []).map((a) => a.action);
   if (denegado.length || DENEGADO.test(stderr)) {
@@ -275,6 +329,52 @@ function ubicarAgy() {
     process.platform === 'win32' ? join(process.env.LOCALAPPDATA ?? '', 'agy', 'bin', nombre) : join(homedir(), '.local', 'bin', nombre),
   );
   return candidatos.find((c) => existsSync(c)) ?? null;
+}
+
+// Carpeta de datos de agy: log/ tiene un cli-<fecha>.log por ejecución y brain/<conversación>/ lo que genera.
+const carpetaAgy = () => process.env.DELEGAR_AGY_HOME || join(homedir(), '.gemini', 'antigravity-cli');
+
+// Los reintentos internos de agy («attempt 1 failed (…)») solo quedan en su log, no en stderr ni en el JSON.
+// Sin id de conversación, solo se usa el log si hubo uno en esa ventana: con tareas en paralelo no se adivina.
+export function leerLogAgy({ desde, conversacion }) {
+  const dir = join(carpetaAgy(), 'log');
+  let candidatos;
+  try {
+    candidatos = readdirSync(dir)
+      .filter((n) => /^cli-.*\.log$/.test(n))
+      .map((n) => join(dir, n))
+      // Por creación, no por modificación: agy crea un log por proceso, y el del intento anterior de --respaldo
+      // (misma conversación con --conversacion) se modificó hasta justo antes de este intento.
+      .filter((f) => {
+        const s = statSync(f);
+        return (s.birthtimeMs || s.mtimeMs) >= desde - 2000;
+      });
+  } catch {
+    return [];
+  }
+  const textos = candidatos.map((f) => {
+    try {
+      return readFileSync(f, 'utf8');
+    } catch {
+      return '';
+    }
+  });
+  const propios = conversacion ? textos.filter((t) => t.includes(conversacion)) : textos.length === 1 ? textos : [];
+  return propios.flatMap((t) => [...t.matchAll(/attempt \d+ failed \((.+)\), retrying/g)].map((m) => m[1].slice(0, 200)));
+}
+
+// agy guarda imágenes y planes en brain/<conversación>/ y a veces responde como si no los hubiera hecho.
+function generadosEnBrain(conversacion, desde) {
+  if (!conversacion) return [];
+  const base = join(carpetaAgy(), 'brain', conversacion);
+  const hallados = [];
+  recorrer(base, (ruta, e) => {
+    if (e.isDirectory()) return e.name !== '.system_generated';
+    try {
+      if (statSync(join(base, ruta)).mtimeMs >= desde - 2000) hallados.push(join(base, ruta).replace(/\\/g, '/'));
+    } catch {}
+  });
+  return hallados.sort();
 }
 
 function matarArbol(pid) {
@@ -335,7 +435,7 @@ export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = ma
 const IGNORADAS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next']);
 const TOPE_ARCHIVOS = 20000;
 // Lo que el script escribe junto al encargo: no son cambios de agy.
-const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'historial.jsonl'];
+const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'respuesta.json', 'historial.jsonl', 'resumen.json', 'lote-errores.txt'];
 // Lo que escribe el orquestador para agy. Editarlo mientras agy trabaja (p. ej., reforzar el encargo de varias
 // tareas en paralelo) daba un falso edito_en_lectura.
 const ENTRADAS = ['encargo.md', 'correccion.md'];
@@ -452,12 +552,18 @@ function archivosTocados(antes, despues, excluir) {
   if (!antes || !despues || antes.length !== despues.length) return null;
   const clave = (ruta) => (process.platform === 'win32' ? resolve(ruta).toLowerCase() : resolve(ruta));
   const excluidos = new Set(excluir.map(clave));
+  // Otra carpeta de encargo dentro del espacio de trabajo (una ejecución anterior o una en paralelo): sus archivos
+  // los escribe el script o el orquestador, no agy (falso edito_en_lectura del 19/10).
+  // En un lote, resumen.json aparece antes que agy-salida.json: también cuenta la carpeta que tiene encargo.md.
+  const deOtroEncargo = (absoluta) =>
+    [...PROPIOS, ...ENTRADAS].includes(basename(absoluta)) &&
+    ['agy-salida.json', 'encargo.md'].some((n) => existsSync(join(dirname(absoluta), n)));
   const tocados = [];
   antes.forEach((a, i) => {
     const d = despues[i];
     for (const r of new Set([...a.mapa.keys(), ...d.mapa.keys()])) {
       const absoluta = join(a.base, r);
-      if (excluidos.has(clave(absoluta)) || a.mapa.get(r) === d.mapa.get(r)) continue;
+      if (excluidos.has(clave(absoluta)) || a.mapa.get(r) === d.mapa.get(r) || deOtroEncargo(absoluta)) continue;
       tocados.push(relative(antes[0].base, absoluta).replace(/\\/g, '/'));
     }
   });
@@ -496,6 +602,25 @@ function leerJson(archivo) {
   return null;
 }
 
+// Con --esquema, agy no siempre llena structured_output: a veces el JSON viene en la respuesta, solo, en un bloque
+// de código o entre texto (visto en tesis-salud). Devuelve el último objeto JSON válido, o undefined.
+export function extraerJson(texto) {
+  const candidatos = [texto.trim(), ...[...texto.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((m) => m[1]).reverse()];
+  // Entre texto: desde cada «{», empezando por el último, hasta la última «}». Así una llave suelta antes del
+  // JSON («el campo {id}») o un borrador anterior no lo arruinan.
+  const fin = texto.lastIndexOf('}');
+  for (let i = texto.lastIndexOf('{', fin); i !== -1; i = i ? texto.lastIndexOf('{', i - 1) : -1) {
+    candidatos.push(texto.slice(i, fin + 1));
+  }
+  for (const c of candidatos) {
+    try {
+      const valor = JSON.parse(c);
+      if (valor && typeof valor === 'object') return valor;
+    } catch {}
+  }
+  return undefined;
+}
+
 function imprimir(resumen, formato) {
   if (formato === 'json') {
     process.stdout.write(JSON.stringify(resumen, null, 2) + '\n');
@@ -504,6 +629,7 @@ function imprimir(resumen, formato) {
   const lineas = [`estado: ${resumen.estado}`];
   if (resumen.lista) lineas.push(`lista: ${resumen.lista}`);
   for (const [grupo, modelos] of Object.entries(resumen.grupos ?? {})) lineas.push(`${grupo}: ${modelos.join(', ')}`);
+  for (const [g, familias] of Object.entries(resumen.gamas ?? {})) lineas.push(`gama ${g}: ${familias.join(', ')}`);
   if (resumen.alias) {
     lineas.push('alias:');
     for (const [alias, slug] of Object.entries(resumen.alias)) lineas.push(`  ${alias} → ${slug}`);
@@ -514,12 +640,20 @@ function imprimir(resumen, formato) {
     lineas.push(`modelo: ${resumen.modelo}${origen ? ` (${origen})` : ''}`);
   }
   if (resumen.intentos?.length > 1) lineas.push(`intentos: ${resumen.intentos.map((i) => `${i.modelo} (${i.estado})`).join(' → ')}`);
-  if (resumen.segundos !== undefined) lineas.push(`tiempo: ${resumen.segundos} s · tokens de agy: ${resumen.tokens ?? '?'}`);
+  if (resumen.segundos !== undefined) {
+    // duration_seconds es tiempo activo del modelo: el 25/10 dio 617 s en una corrida de 20 min de reloj.
+    const agy = resumen.segundos_agy !== undefined && resumen.segundos_agy !== resumen.segundos ? ` (agy: ${resumen.segundos_agy} s activos)` : '';
+    lineas.push(`tiempo: ${duracion(resumen.segundos)} de reloj${agy} · tokens de agy: ${resumen.tokens ?? '?'}`);
+  }
+  if (resumen.tabla) lineas.push(...resumen.tabla);
   if (resumen.conversacion) lineas.push(`conversación: ${resumen.conversacion}`);
   if (resumen.archivos !== undefined) {
     const lista = resumen.archivos === null ? 'no se sabe (proyecto sin git y demasiado grande)' : resumen.archivos.join(', ') || 'ninguno';
     lineas.push(`archivos tocados: ${lista}${resumen.sin_git ? ' (sin git: incluye cambios de cualquier proceso)' : ''}`);
   }
+  if (resumen.fallos_log?.length) lineas.push(`reintentos internos de agy: ${resumen.fallos_log.join(' | ')}`);
+  if (resumen.generados?.length) lineas.push(`generados por agy fuera del proyecto: ${resumen.generados.join(', ')}`);
+  if (resumen.respuesta_json) lineas.push(`json: ${resumen.respuesta_json}`);
   if (resumen.denegado?.length) lineas.push(`denegado: ${resumen.denegado.join(', ')}`);
   if (resumen.secretos?.length) lineas.push(`secretos: ${resumen.secretos.join(', ')}`);
   if (resumen.disponibles?.length) lineas.push(`disponibles: ${resumen.disponibles.join(', ')}`);
@@ -528,6 +662,8 @@ function imprimir(resumen, formato) {
   if (resumen.respuesta !== undefined) lineas.push(`respuesta (completa en ${resumen.respuesta_completa}):`, resumen.respuesta);
   process.stdout.write(lineas.join('\n') + '\n');
 }
+
+const duracion = (s) => (s < 120 ? `${s} s` : `${Math.round(s / 60)} min`);
 
 function entero(nombre, valor) {
   const n = Number(valor);
@@ -550,7 +686,7 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 function archivoIncidencias() {
   return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
@@ -628,8 +764,16 @@ async function listarModelos(bin, o) {
   if (lista.modelos) {
     resumen.lista = `${lista.origen}, ${fechaLocal(lista.fecha)}`;
     resumen.grupos = agruparModelos(lista.modelos);
+    const gemini = lista.modelos.map(parsearModelo).filter((p) => p?.proveedor === 'gemini');
+    resumen.gamas = {};
+    for (const p of gemini) {
+      const familias = (resumen.gamas[gama(p.familia)] ??= []);
+      if (!familias.includes(p.familia)) familias.push(p.familia);
+    }
+    // Los alias de gama primero; luego los de cada familia Gemini presente, aunque sea nueva.
+    const deFamilias = gemini.map((p) => `${p.familia}-${p.nivel}`);
     resumen.alias = {};
-    for (const alias of ALIAS_COMUNES) {
+    for (const alias of [...new Set([...ALIAS_FIJOS, ...deFamilias])]) {
       const r = resolverModelo(alias, lista.modelos);
       resumen.alias[alias] = r.slug ? `${r.slug}${r.nota ? ` (${r.nota})` : ''}` : 'no disponible';
     }
@@ -638,13 +782,121 @@ async function listarModelos(bin, o) {
   return CODIGOS[resumen.estado] ?? 1;
 }
 
+// Carpeta nueva y única para un encargo. En la evaluación de la 0.4.0, dos sesiones en paralelo eligieron el mismo
+// nombre (fecha y tema) y una pisó el encargo de la otra; otra reutilizó una carpeta vieja aunque la skill lo
+// prohibía. mkdirSync sin recursive falla si ya existe: así ninguna carpeta se comparte.
+export function carpetaNueva(tema, base = process.env.DELEGAR_AGY_CARPETAS || join(tmpdir(), 'delegar-antigravity')) {
+  const limpio = tema.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'encargo';
+  const d = new Date();
+  const dos = (n) => String(n).padStart(2, '0');
+  const nombre = `${d.getFullYear()}${dos(d.getMonth() + 1)}${dos(d.getDate())}-${dos(d.getHours())}${dos(d.getMinutes())}-${limpio}`;
+  mkdirSync(base, { recursive: true });
+  for (let i = 1; ; i++) {
+    const ruta = join(base, i === 1 ? nombre : `${nombre}-${i}`);
+    try {
+      mkdirSync(ruta);
+      return ruta;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+  }
+}
+
+// Varios encargos independientes con una sola llamada del orquestador: cada subcarpeta con encargo.md se ejecuta
+// como un proceso hijo de este script (con todas sus protecciones), hasta 5 a la vez, y solo vuelve una tabla.
+const PARALELO_MAXIMO = 5;
+
+async function correrLote(o, cwdComun) {
+  const raiz = rutaReal(o.lote);
+  const paralelo = entero('paralelo', o.paralelo);
+  if (paralelo > PARALELO_MAXIMO) throw new Error(`--paralelo admite hasta ${PARALELO_MAXIMO} encargos a la vez (lo probado sin agotar la cuota)`);
+  let carpetas;
+  try {
+    carpetas = readdirSync(raiz, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && existsSync(join(raiz, e.name, 'encargo.md')))
+      .map((e) => join(raiz, e.name))
+      .sort();
+  } catch {
+    throw new Error(`no existe --lote: ${raiz}`);
+  }
+  if (!carpetas.length) throw new Error(`--lote: ninguna subcarpeta de ${raiz} tiene encargo.md`);
+  const comunes = ['--modelo', o.modelo, '--modo', o.modo, '--timeout', o.timeout, '--margen', o.margen, '--max-respuesta', o['max-respuesta'], '--formato', 'json'];
+  if (o.esfuerzo) comunes.push('--esfuerzo', o.esfuerzo);
+  for (const flag of ['respaldo', 'permitir-secretos', 'seco']) if (o[flag]) comunes.push(`--${flag}`);
+  for (const dir of o['add-dir']) comunes.push('--add-dir', resolve(dir));
+  // Una sola consulta de modelos antes de lanzar: así los hijos usan la caché en lugar de pedirla 5 veces.
+  const bin = ubicarAgy();
+  if (bin) await obtenerModelos(bin, { refrescar: o['refrescar-modelos'] });
+
+  const uno = (carpeta) =>
+    new Promise((listo) => {
+      const args = [fileURLToPath(import.meta.url), '--encargo', join(carpeta, 'encargo.md'), '--cwd', cwdComun ? resolve(cwdComun) : carpeta, ...comunes];
+      if (o.esquema) {
+        const propio = join(carpeta, o.esquema);
+        args.push('--esquema', isAbsolute(o.esquema) ? o.esquema : existsSync(propio) ? propio : resolve(o.esquema));
+      }
+      // Salida a archivos, como con agy: nada retiene una tubería.
+      const salida = join(carpeta, 'resumen.json');
+      const errores = join(carpeta, 'lote-errores.txt');
+      const [out, err] = [openSync(salida, 'w'), openSync(errores, 'w')];
+      const hijo = spawn(process.execPath, args, { stdio: ['ignore', out, err], windowsHide: true });
+      let cerrado = false;
+      // Node puede emitir «error» y luego «exit»: cerrar dos veces lanzaría EBADF y tumbaría el lote.
+      const cerrar = (codigo) => {
+        if (cerrado) return;
+        cerrado = true;
+        closeSync(out);
+        closeSync(err);
+        let resumen;
+        try {
+          resumen = JSON.parse(readFileSync(salida, 'utf8'));
+          rmSync(errores, { force: true });
+        } catch {
+          resumen = { estado: 'error', detalle: readFileSync(errores, 'utf8').trim().slice(0, 300) || `código ${codigo}` };
+        }
+        listo({ carpeta: basename(carpeta), ...resumen });
+      };
+      hijo.once('error', () => cerrar(null));
+      hijo.once('exit', cerrar);
+    });
+
+  const resultados = new Array(carpetas.length);
+  let siguiente = 0;
+  const trabajador = async () => {
+    while (siguiente < carpetas.length) {
+      const i = siguiente++;
+      resultados[i] = await uno(carpetas[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(paralelo, carpetas.length) }, trabajador));
+
+  const buenos = new Set(['ok', 'seco']);
+  const tabla = ['| Encargo | Estado | Modelo | Tiempo |', '|---|---|---|---|'];
+  for (const r of resultados) tabla.push(`| ${r.carpeta} | ${r.estado} | ${r.modelo ?? '?'} | ${r.segundos !== undefined ? duracion(r.segundos) : '?'} |`);
+  const fallidos = resultados.filter((r) => !buenos.has(r.estado));
+  const resumen = {
+    estado: fallidos.length ? 'lote_con_fallos' : 'ok',
+    lote: raiz,
+    encargos: resultados.map(({ carpeta, estado, modelo, segundos, detalle, respuesta_completa }) => ({ carpeta, estado, modelo, segundos, detalle, respuesta_completa })),
+    tabla: o.formato === 'json' ? undefined : tabla,
+    detalle: fallidos.length
+      ? `${fallidos.length} de ${resultados.length} sin ok: ${fallidos.map((r) => `${r.carpeta} (${r.estado}: ${(r.detalle ?? '').slice(0, 120)})`).join('; ')}. El resumen completo de cada uno está en su resumen.json.`
+      : `las respuestas están en <subcarpeta>/respuesta.md; el resumen de cada una, en su resumen.json.`,
+  };
+  imprimir(resumen, o.formato);
+  return fallidos.length ? 2 : 0;
+}
+
 async function principal() {
   const { values: o } = parseArgs({
     options: {
       encargo: { type: 'string' },
       modelo: { type: 'string', default: MODELO_POR_DEFECTO },
       modo: { type: 'string', default: 'lectura' },
-      cwd: { type: 'string', default: process.cwd() },
+      cwd: { type: 'string' },
+      lote: { type: 'string' },
+      carpeta: { type: 'string' },
+      paralelo: { type: 'string', default: '5' },
       esfuerzo: { type: 'string' },
       timeout: { type: 'string', default: '600' },
       margen: { type: 'string', default: '30' },
@@ -662,6 +914,9 @@ async function principal() {
       incidencias: { type: 'boolean', default: false },
     },
   });
+  // En un lote, cada encargo trabaja en su subcarpeta salvo que se pida un --cwd común.
+  const cwdComun = o.cwd;
+  o.cwd ??= process.cwd();
   if (o.anotar !== undefined) {
     const texto = o.anotar.trim();
     if (!texto) throw new Error('--anotar necesita el texto de la lección');
@@ -675,6 +930,13 @@ async function principal() {
     else process.stdout.write(resumirIncidencias(entradas, archivoIncidencias()) + '\n');
     return 0;
   }
+  if (o.carpeta !== undefined) {
+    const ruta = carpetaNueva(o.carpeta);
+    if (o.formato === 'json') imprimir({ estado: 'carpeta', carpeta: ruta }, 'json');
+    else process.stdout.write(ruta.replace(/\\/g, '/') + '\n');
+    return 0;
+  }
+  if (o.lote !== undefined) return correrLote(o, cwdComun);
   let encargo, cwd, timeout, margen, maxRespuesta;
   if (!o.modelos) {
     if (!o.encargo) throw new Error('falta --encargo <archivo>');
@@ -779,6 +1041,9 @@ async function principal() {
   const registros = [];
   const probados = new Set();
   let pendientes = [pedido.slug, ...(o.respaldo ? cadenaRespaldo(pedido.slug, lista.modelos) : [])];
+  const reintentados = new Set();
+  const inicioTotal = Date.now();
+  const espera = Number(process.env.DELEGAR_AGY_ESPERA ?? 60) * 1000;
   let final;
   while (pendientes.length) {
     const modelo = pendientes.shift();
@@ -798,40 +1063,63 @@ async function principal() {
     });
     const json = leerJson(salida);
     const stderr = readFileSync(errores, 'utf8');
-    final = { modelo, json, inicio, ...clasificar({ json, stderr, ...r }) };
+    const fallosLog = leerLogAgy({ desde: inicio, conversacion: json?.conversation_id || opciones.conversacion });
+    final = { modelo, json, inicio, fin: Date.now(), fallosLog, ...clasificar({ json, stderr, fallosLog, ...r }) };
     intentos.push({ modelo, estado: final.estado });
     registros.push({
       fecha: fechaLocal(inicio),
       modelo,
       estado: final.estado,
-      segundos: Math.round(json?.duration_seconds ?? (Date.now() - inicio) / 1000),
+      segundos: Math.round((final.fin - inicio) / 1000),
+      segundos_agy: json?.duration_seconds !== undefined ? Math.round(json.duration_seconds) : undefined,
       tokens: json?.usage?.total_tokens,
       conversacion: json?.conversation_id || undefined,
       denegado: final.denegado?.length ? final.denegado : undefined,
+      fallos_log: fallosLog.length ? fallosLog : undefined,
       stderr: stderr.trim().slice(0, 500) || undefined,
     });
     if (!o.respaldo) break;
     if (final.estado === 'modelo_invalido') {
-      // La caché listaba un modelo que agy ya no tiene: se refresca y se rehace la cadena.
+      // La caché listaba un modelo que agy ya no tiene: se refresca, se vuelve a resolver el alias (quizá ya hay
+      // un reemplazo, como Argon en lugar de Pro) y se rehace la cadena.
       if (!refrescada) {
         await refrescar();
-        pendientes = cadenaRespaldo(pedido.slug, lista.modelos).filter((m) => !probados.has(m));
+        const nuevo = resolverModelo(o.modelo, lista.modelos).slug ?? pedido.slug;
+        pendientes = [nuevo, ...cadenaRespaldo(nuevo, lista.modelos)].filter((m, i, todos) => !probados.has(m) && todos.indexOf(m) === i);
       }
       continue;
     }
-    if (final.estado !== 'cuota') break;
+    // Un fallo pasajero se reintenta una vez con el mismo modelo tras una espera (lo que funcionó en los arneses
+    // de transcriptor y clinical-logic-mentor); si se repite, sigue la cadena.
+    if (final.estado === 'transitorio' && !reintentados.has(modelo)) {
+      reintentados.add(modelo);
+      pendientes.unshift(modelo);
+      await new Promise((listo) => setTimeout(listo, espera));
+      continue;
+    }
+    if (!['cuota', 'modelo_mudo', 'transitorio'].includes(final.estado)) break;
   }
   if (!final) return sinModelo('Ningún modelo de la cadena de respaldo está en agy models.');
 
   const { json } = final;
+  const marcar = (estado, detalle) => {
+    final.estado = estado;
+    final.detalle = detalle;
+    intentos.at(-1).estado = estado;
+    registros.at(-1).estado = estado;
+  };
+  let estructurado = json?.structured_output;
+  if (opciones.esquema && estructurado === undefined && final.estado === 'ok') {
+    estructurado = extraerJson(json.response);
+    if (estructurado === undefined) {
+      marcar('incompleto', 'pediste --esquema y la respuesta no trae un JSON válido: continúa con --conversacion pidiendo «responde solo con el JSON, sin texto alrededor».');
+    }
+  }
   const despues = fotoArchivos(cwd, extras);
   const excluir = [...PROPIOS, ...ENTRADAS].map((n) => join(carpeta, n)).concat(encargo);
   const archivos = archivosTocados(antes, despues, excluir);
   if (o.modo === 'lectura' && archivos?.length) {
-    final.estado = 'edito_en_lectura';
-    final.detalle = 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.';
-    intentos.at(-1).estado = final.estado;
-    registros.at(-1).estado = final.estado;
+    marcar('edito_en_lectura', 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.');
   }
   // Una línea por ejecución: agy-salida.json y agy-errores.txt se sobrescriben en cada intento y en cada
   // continuación, y un fallo raro (cuota, cuelgue) no se repite a pedido.
@@ -851,23 +1139,30 @@ async function principal() {
       estado: final.estado,
       intentos: intentos.length > 1 ? intentos : undefined,
       segundos: registros.at(-1).segundos,
+      segundos_agy: registros.at(-1).segundos_agy,
       tokens: registros.at(-1).tokens,
       denegado: fallido.denegado,
+      fallos_log: registros.flatMap((r) => r.fallos_log ?? []).slice(0, 5).join(' | ') || undefined,
       detalle: final.estado === 'ok' ? undefined : final.detalle?.slice(0, 300),
       stderr: fallido.stderr?.slice(0, 300),
     });
   }
   if (final.estado === 'modelo_invalido') await refrescar();
+  const generados = generadosEnBrain(json?.conversation_id || opciones.conversacion, final.inicio);
   const resumen = {
     estado: final.estado,
     modelo: final.modelo,
     ...(final.modelo === pedido.slug ? extra : {}),
     intentos,
-    segundos: Math.round(json?.duration_seconds ?? (Date.now() - final.inicio) / 1000),
+    // De reloj y desde el primer intento: duration_seconds de agy es solo el tiempo activo del modelo.
+    segundos: Math.round((final.fin - inicioTotal) / 1000),
+    segundos_agy: registros.at(-1).segundos_agy,
     tokens: json?.usage?.total_tokens,
     conversacion: json?.conversation_id || undefined,
     archivos,
     sin_git: antes && !antes[0].git ? true : undefined,
+    fallos_log: final.fallosLog.length ? final.fallosLog : undefined,
+    generados: generados.length ? generados : undefined,
     denegado: final.denegado,
     detalle: final.detalle,
     disponibles: final.estado === 'modelo_invalido' ? lista.modelos ?? undefined : undefined,
@@ -875,8 +1170,14 @@ async function principal() {
   };
   const texto = json?.structured_output !== undefined ? JSON.stringify(json.structured_output, null, 2) : json?.response ?? '';
   const completa = join(carpeta, 'respuesta.md');
+  const archivoJson = join(carpeta, 'respuesta.json');
   // Una respuesta vieja de otra ejecución no debe pasar por la de esta.
   rmSync(completa, { force: true });
+  rmSync(archivoJson, { force: true });
+  if (opciones.esquema && estructurado !== undefined) {
+    writeFileSync(archivoJson, JSON.stringify(estructurado, null, 2) + '\n');
+    resumen.respuesta_json = archivoJson;
+  }
   if (texto) {
     writeFileSync(completa, texto);
     const limpia = limpiarEnlaces(texto, cwd).trim();

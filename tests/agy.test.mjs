@@ -1,33 +1,43 @@
 // Pruebas de scripts/agy.mjs contra el agy falso (tests/fake-agy.mjs). No llaman al agy real.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   MODELO_POR_DEFECTO,
   VERSION,
   buscarSecretos,
   cadenaRespaldo,
+  carpetaNueva,
   clasificar,
   construirArgs,
   ejecutar,
+  extraerJson,
+  gama,
   limpiarEnlaces,
   resolverModelo,
   resumirIncidencias,
 } from '../skills/delegar-antigravity/scripts/agy.mjs';
-import { LISTA_1110, LISTA_1210, LISTA_FUTURA } from './listas-modelos.mjs';
+import { LISTA_1025, LISTA_1110, LISTA_1210, LISTA_FUTURA } from './listas-modelos.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const script = join(repo, 'skills', 'delegar-antigravity', 'scripts', 'agy.mjs');
 const falso = join(repo, 'tests', 'fake-agy.mjs');
 
-// Un proyecto, una carpeta de encargo y una caché de modelos nuevos en cada prueba.
+// Un proyecto, una carpeta de encargo y una caché de modelos nuevos en cada prueba. Se borran al terminar:
+// hasta la 0.3.0 quedaban en la carpeta temporal (casi 4000 el 2026-10-25).
+const temporales = [];
+after(() => {
+  for (const t of temporales) rmSync(t, { recursive: true, force: true, maxRetries: 3 });
+});
+
 function preparar({ git = false } = {}) {
   // En el runner de Windows, tmpdir() da la ruta corta 8.3 (RUNNER~1) y el script usa la larga (realpath).
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'agy-prueba-')));
+  temporales.push(base);
   const proyecto = join(base, 'proyecto');
   const carpeta = join(base, 'encargo');
   mkdirSync(join(proyecto, 'src'), { recursive: true });
@@ -51,6 +61,7 @@ function preparar({ git = false } = {}) {
     cache: join(base, 'cache'),
     registro: join(base, 'registro.jsonl'),
     incidencias: join(base, 'incidencias', 'incidencias.jsonl'),
+    agyHome: join(base, 'agy-home'),
   };
 }
 
@@ -63,8 +74,10 @@ function correr(p, escenario, extra = [], env = {}, { cwd = p.proyecto, encargo 
       ...process.env,
       AGY_BIN: falso,
       DELEGAR_AGY_CACHE: p.cache,
-      // Nunca el registro real del usuario.
+      // Nunca el registro, los logs ni el brain/ reales del usuario.
       DELEGAR_AGY_INCIDENCIAS: p.incidencias,
+      DELEGAR_AGY_HOME: p.agyHome,
+      DELEGAR_AGY_ESPERA: '0',
       FAKE_AGY_ESCENARIO: escenario,
       FAKE_AGY_REGISTRO: p.registro,
       ...env,
@@ -103,7 +116,7 @@ test('modelos: un alias se resuelve a la versión más alta de su familia y nive
   assert.equal(resolverModelo('gpt-oss', LISTA_FUTURA).slug, 'gpt-oss-200b-medium');
 });
 
-test('modelos: sin Pro, pro-* se resuelve a flash-high y lo dice', () => {
+test('modelos: sin Pro ni otra familia potente, pro-* se resuelve a flash-high y lo dice', () => {
   for (const pedido of ['pro-high', 'pro-low']) {
     const r = resolverModelo(pedido, LISTA_1210);
     assert.equal(r.slug, 'gemini-3.8-flash-high', pedido);
@@ -129,13 +142,16 @@ test('modelos: el respaldo prueba versiones anteriores y luego el nivel vecino, 
     'gemini-3.8-flash-high',
     'gemini-3.8-flash-low',
   ]);
-  assert.deepEqual(cadenaRespaldo('gemini-3.1-pro-high', LISTA_1110), ['gemini-3.1-pro-low', 'gemini-3.8-flash-high']);
+  // Lo potente cae en lo rápido con más razonamiento, sin pasar por otro nivel potente.
+  assert.deepEqual(cadenaRespaldo('gemini-3.1-pro-high', LISTA_1110), ['gemini-3.8-flash-high']);
+  assert.deepEqual(cadenaRespaldo('gemini-4-argon-high', LISTA_1025), ['gemini-3.8-flash-high']);
+  assert.deepEqual(cadenaRespaldo('gemini-4-argon-low', LISTA_1025), ['gemini-3.8-flash-high']);
   assert.deepEqual(cadenaRespaldo('gemini-3.8-flash-high', LISTA_1210), ['gemini-3.8-flash-medium']);
   // Un modelo que ya no existe también tiene respaldo, según su familia y nivel.
   assert.deepEqual(cadenaRespaldo('gemini-3.1-pro-low', LISTA_1210), ['gemini-3.8-flash-high']);
   // Claude y GPT no tienen respaldo, y ninguna cadena cae en ellos.
   assert.deepEqual(cadenaRespaldo('claude-sonnet-5-5-low', LISTA_1210), []);
-  for (const l of [LISTA_1110, LISTA_1210, LISTA_FUTURA]) {
+  for (const l of [LISTA_1110, LISTA_1210, LISTA_1025, LISTA_FUTURA]) {
     for (const m of l.filter((x) => x.startsWith('gemini-'))) {
       for (const r of cadenaRespaldo(m, l)) {
         assert.match(r, /^gemini-/, `${m} → ${r}`);
@@ -715,4 +731,289 @@ test('agy: nunca arma --dangerously-skip-permissions y siempre pasa modelo y tie
   assert.equal(arg(args, '--model'), 'gemini-3.8-flash-low');
   assert.equal(arg(args, '--print-timeout'), '600s');
   assert.doesNotMatch(readFileSync(script, 'utf8'), /dangerously-skip-permissions/);
+});
+
+// --- 0.4.0: gamas de modelos ---
+
+test('gamas: rapido-* y potente-* eligen la versión más alta de su gama, con familias nuevas incluidas', () => {
+  assert.equal(gama('flash'), 'rapido');
+  assert.equal(gama('flash-lite'), 'rapido');
+  assert.equal(gama('argon'), 'potente');
+  assert.equal(resolverModelo('potente-high', LISTA_1025).slug, 'gemini-4-argon-high');
+  assert.equal(resolverModelo('potente-low', LISTA_1025).slug, 'gemini-4-argon-low');
+  assert.equal(resolverModelo('rapido-medium', LISTA_1025).slug, 'gemini-3.8-flash-medium');
+  assert.equal(resolverModelo('argon-medium', LISTA_1025).slug, 'gemini-4-argon-medium');
+  // Una familia inventada de versión mayor gana sin tocar el código; Pro 4.0 sigue disponible por su nombre.
+  assert.equal(resolverModelo('potente-high', LISTA_FUTURA).slug, 'gemini-5-xenon-high');
+  assert.equal(resolverModelo('pro-high', LISTA_FUTURA).slug, 'gemini-4.0-pro-high');
+  assert.equal(resolverModelo('rapido-high', LISTA_FUTURA).slug, 'gemini-4.0-flash-high');
+  assert.equal(resolverModelo('potente-high', LISTA_1110).slug, 'gemini-3.1-pro-high');
+  // Las gamas nunca eligen Claude ni GPT.
+  assert.equal(resolverModelo('potente-medium', LISTA_1210).slug, 'gemini-3.8-flash-high');
+});
+
+test('gamas: sin Pro, pro-* pasa a la gama potente con su nivel; sin potentes, a rapido-high', () => {
+  const alto = resolverModelo('pro-high', LISTA_1025);
+  assert.equal(alto.slug, 'gemini-4-argon-high');
+  assert.match(alto.nota, /sin Pro.*potente-high/);
+  assert.equal(resolverModelo('pro-low', LISTA_1025).slug, 'gemini-4-argon-low');
+  assert.equal(resolverModelo('pro', LISTA_1025).slug, 'gemini-4-argon-medium');
+  // Si Argon también se va, Argon y las gamas potentes caen en lo rápido con más razonamiento.
+  for (const pedido of ['argon-high', 'potente-low']) {
+    const r = resolverModelo(pedido, LISTA_1210);
+    assert.equal(r.slug, 'gemini-3.8-flash-high', pedido);
+    assert.match(r.nota, /rapido-high/, pedido);
+  }
+  // Una familia que nunca fue de Gemini no se adivina.
+  assert.equal(resolverModelo('haiku-low', LISTA_1025).slug, null);
+});
+
+test('gamas: el modelo por defecto es rapido-medium y --modelos muestra gamas y alias de las familias presentes', () => {
+  assert.equal(resolverModelo(MODELO_POR_DEFECTO, LISTA_1025).slug, 'gemini-3.8-flash-medium');
+  const p = preparar();
+  const { resumen } = correr(p, 'exito', ['--modelos'], lista(LISTA_1025), { encargo: null });
+  assert.deepEqual(resumen.gamas, { potente: ['argon'], rapido: ['flash'] });
+  assert.equal(resumen.alias['potente-high'], 'gemini-4-argon-high');
+  assert.equal(resumen.alias['argon-low'], 'gemini-4-argon-low');
+  assert.match(resumen.alias['pro-high'], /gemini-4-argon-high.*sin Pro/);
+});
+
+// --- 0.4.0: fallos vistos en el uso real ---
+
+test('agy: Argon mudo («stream idle timeout» en cli.log) es «modelo_mudo», sin consejo de rescate', () => {
+  const p = preparar();
+  const { codigo, resumen } = correr(p, 'mudo', ['--modelo', 'argon-high'], lista(LISTA_1025));
+  assert.equal(codigo, 1);
+  assert.equal(resumen.estado, 'modelo_mudo');
+  assert.doesNotMatch(resumen.detalle, /correccion\.md pidiendo/);
+  assert.match(resumen.fallos_log.join('\n'), /stream idle timeout/);
+  const incidencia = readFileSync(p.incidencias, 'utf8');
+  assert.match(incidencia, /modelo_mudo/);
+  assert.match(incidencia, /stream idle timeout/);
+});
+
+test('agy: con --respaldo, un modelo mudo pasa directo a rapido-high', () => {
+  const p = preparar();
+  const env = { ...lista(LISTA_1025), FAKE_AGY_MUDOS: 'gemini-4-argon-high' };
+  const { codigo, resumen, llamadas } = correr(p, 'mudo', ['--modelo', 'potente-high', '--respaldo'], env);
+  assert.equal(codigo, 0);
+  assert.deepEqual(resumen.intentos, [
+    { modelo: 'gemini-4-argon-high', estado: 'modelo_mudo' },
+    { modelo: 'gemini-3.8-flash-high', estado: 'ok' },
+  ]);
+  assert.equal(llamadas.length, 2);
+});
+
+test('agy: un log de otra conversación no se atribuye a esta ejecución', () => {
+  const p = preparar();
+  const dir = join(p.agyHome, 'log');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'cli-otro.log'), 'Created conversation 00000000-0000-0000-0000-000000000000\nRun: attempt 1 failed (stream reading error: stream idle timeout (5m0s)), retrying in 4s\n');
+  const { resumen } = correr(p, 'print_timeout');
+  assert.equal(resumen.estado, 'timeout');
+  assert.equal(resumen.fallos_log, undefined);
+});
+
+test('agy: un 503 es «transitorio»; con --respaldo se reintenta el mismo modelo y termina en ok', () => {
+  const p = preparar();
+  const sin = correr(p, 'transitorio', ['--modelo', 'rapido-medium'], lista(LISTA_1025));
+  assert.equal(sin.codigo, 1);
+  assert.equal(sin.resumen.estado, 'transitorio');
+  assert.match(sin.resumen.detalle, /--respaldo/);
+  const q = preparar();
+  const con = correr(q, 'transitorio', ['--modelo', 'rapido-medium', '--respaldo'], lista(LISTA_1025));
+  assert.equal(con.codigo, 0);
+  assert.deepEqual(con.resumen.intentos.map((i) => `${i.modelo} ${i.estado}`), [
+    'gemini-3.8-flash-medium transitorio',
+    'gemini-3.8-flash-medium ok',
+  ]);
+});
+
+test('agy: un fallo transitorio que se repite sigue la cadena de respaldo', () => {
+  const p = preparar();
+  const { resumen } = correr(p, 'transitorio', ['--modelo', 'rapido-low', '--respaldo'], { ...lista(LISTA_1025), FAKE_AGY_SIEMPRE: '1' });
+  assert.equal(resumen.estado, 'transitorio');
+  assert.deepEqual(resumen.intentos.map((i) => i.modelo), ['gemini-3.8-flash-low', 'gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-medium']);
+});
+
+test('agy: un error con respuesta es «parcial»: guarda respuesta.md y dice que la lea antes de reintentar', () => {
+  const p = preparar();
+  const { codigo, resumen } = correr(p, 'parcial');
+  assert.equal(codigo, 2);
+  assert.equal(resumen.estado, 'parcial');
+  assert.match(resumen.detalle, /stream was interrupted.*respuesta\.md/s);
+  assert.match(readFileSync(join(p.carpeta, 'respuesta.md'), 'utf8'), /Hallazgos/);
+  const larga = correr(preparar(), 'salida_larga');
+  assert.equal(larga.resumen.estado, 'parcial');
+  assert.match(larga.resumen.detalle, /como máximo 6/);
+  const vacia = correr(preparar(), 'salida_larga_vacia');
+  assert.equal(vacia.resumen.estado, 'error');
+  assert.match(vacia.resumen.detalle, /como máximo 6/);
+});
+
+test('agy: el tiempo del resumen es de reloj y aparte va el tiempo activo de agy', () => {
+  const p = preparar();
+  const { resumen } = correr(p, 'mudo', ['--modelo', 'argon-high'], lista(LISTA_1025));
+  assert.equal(resumen.segundos_agy, 618);
+  assert.ok(resumen.segundos < 60, `reloj: ${resumen.segundos}`);
+  const historial = readFileSync(join(p.carpeta, 'historial.jsonl'), 'utf8');
+  assert.match(historial, /"segundos_agy":618/);
+  // En texto se ven los dos.
+  const r = spawnSync(process.execPath, [script, '--encargo', p.encargo, '--cwd', p.proyecto, '--modelo', 'argon-high'], {
+    encoding: 'utf8',
+    env: { ...process.env, AGY_BIN: falso, DELEGAR_AGY_CACHE: p.cache, DELEGAR_AGY_INCIDENCIAS: p.incidencias, DELEGAR_AGY_HOME: p.agyHome, FAKE_AGY_ESCENARIO: 'mudo', FAKE_AGY_REGISTRO: p.registro, ...lista(LISTA_1025) },
+  });
+  assert.match(r.stdout, /tiempo: \d+ s de reloj \(agy: 618 s activos\)/);
+});
+
+test('agy: los archivos propios de otra carpeta de encargo dentro del --cwd no son «edito_en_lectura»', () => {
+  const p = preparar();
+  const otra = join(p.proyecto, 'otro-encargo');
+  mkdirSync(otra);
+  for (const n of ['agy-salida.json', 'respuesta.md', 'historial.jsonl', 'encargo.md']) writeFileSync(join(otra, n), 'viejo\n');
+  const { resumen } = correr(p, 'toca_otro_encargo');
+  assert.equal(resumen.estado, 'ok');
+  assert.deepEqual(resumen.archivos, []);
+  // Un respuesta.md fuera de una carpeta de encargo sí cuenta.
+  const q = preparar();
+  writeFileSync(join(q.proyecto, 'respuesta.md'), 'viejo\n');
+  mkdirSync(join(q.proyecto, 'otro-encargo'));
+  const r = correr(q, 'toca_otro_encargo', [], { FAKE_AGY_RAIZ: '1' });
+  assert.equal(r.resumen.estado, 'edito_en_lectura');
+  assert.deepEqual(r.resumen.archivos, ['respuesta.md']);
+});
+
+test('agy: lista lo que agy dejó en brain/<conversación>/, sin sus archivos internos', () => {
+  const p = preparar();
+  const { resumen } = correr(p, 'imagen');
+  assert.equal(resumen.generados.length, 1);
+  assert.match(resumen.generados[0], /brain\/297fcc3e-19ea-4601-a61a-67a132cb03c1\/logo_1761400000\.jpg$/);
+});
+
+test('agy: con --esquema y el JSON dentro del texto, lo extrae a respuesta.json', () => {
+  const p = preparar();
+  const esquema = join(p.carpeta, 'esquema.json');
+  writeFileSync(esquema, '{"type":"object"}');
+  const { resumen } = correr(p, 'json_en_texto', ['--esquema', esquema]);
+  assert.equal(resumen.estado, 'ok');
+  assert.deepEqual(JSON.parse(readFileSync(resumen.respuesta_json, 'utf8')), { hallazgos: [{ titulo: 'uno' }] });
+  const sinJson = correr(preparar(), 'exito', ['--esquema', esquema]);
+  assert.equal(sinJson.resumen.estado, 'incompleto');
+  assert.match(sinJson.resumen.detalle, /solo con el JSON/);
+});
+
+// --- 0.4.0: lo que encontró la segunda opinión de Argon High sobre el diff ---
+
+test('agy: el resumen.json de otro encargo de un lote, antes de su agy-salida.json, no es «edito_en_lectura»', () => {
+  const p = preparar();
+  mkdirSync(join(p.proyecto, 'otro-encargo'));
+  writeFileSync(join(p.proyecto, 'otro-encargo', 'encargo.md'), 'Encargo.\n');
+  const { resumen } = correr(p, 'toca_otro_encargo', [], { FAKE_AGY_ARCHIVOS: 'resumen.json' });
+  assert.equal(resumen.estado, 'ok');
+});
+
+test('agy: si la caché listaba un modelo retirado, tras refrescar vuelve a resolver el alias', () => {
+  const p = preparar();
+  correr(p, 'exito', ['--modelos'], lista(LISTA_1110), { encargo: null });
+  // La caché aún tiene Pro 3.1; agy ya solo tiene Argon y Flash.
+  const { resumen } = correr(p, 'exito', ['--modelo', 'pro-high', '--respaldo'], lista(LISTA_1025));
+  assert.equal(resumen.estado, 'ok');
+  assert.equal(resumen.modelo, 'gemini-4-argon-high');
+  assert.deepEqual(resumen.intentos.map((i) => i.estado), ['modelo_invalido', 'ok']);
+});
+
+test('agy: con --conversacion, el log de un intento anterior no convierte este en «modelo_mudo»', (t) => {
+  const p = preparar();
+  const dir = join(p.agyHome, 'log');
+  mkdirSync(dir, { recursive: true });
+  const viejo = join(dir, 'cli-anterior.log');
+  writeFileSync(viejo, 'Created conversation 297fcc3e-19ea-4601-a61a-67a132cb03c1\nRun: attempt 1 failed (stream reading error: stream idle timeout (5m0s)), retrying in 4s\n');
+  if (!statSync(viejo).birthtimeMs) return t.skip('este sistema de archivos no da la fecha de creación');
+  // Creado antes del margen de 2 s, aunque se haya modificado hasta ahora (como el del intento anterior).
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+  utimesSync(viejo, new Date(), new Date());
+  const { resumen } = correr(p, 'print_timeout', ['--conversacion', '297fcc3e-19ea-4601-a61a-67a132cb03c1']);
+  assert.equal(resumen.estado, 'timeout');
+});
+
+test('agy: --carpeta crea una carpeta nueva cada vez, aunque el tema y el minuto coincidan', () => {
+  const p = preparar();
+  const env = { DELEGAR_AGY_CARPETAS: join(p.base, 'encargos') };
+  const crear = () => spawnSync(process.execPath, [script, '--carpeta', 'Resumen de src/ (módulos)'], { encoding: 'utf8', env: { ...process.env, ...env } }).stdout.trim();
+  const [una, otra] = [crear(), crear()];
+  assert.match(una, /\/\d{8}-\d{4}-resumen-de-src-modulos$/);
+  // En el mismo minuto, la segunda lleva el sufijo -2; si cambió el minuto, otro nombre. Nunca la misma.
+  assert.notEqual(otra, una);
+  assert.ok(existsSync(una) && existsSync(otra));
+  assert.notEqual(carpetaNueva('x', join(p.base, 'b')), carpetaNueva('x', join(p.base, 'b')));
+});
+
+test('extraerJson: JSON puro, en bloque de código o entre texto; nada si no hay', () => {
+  assert.deepEqual(extraerJson('{"a":1}'), { a: 1 });
+  assert.deepEqual(extraerJson('Texto\n```json\n{"a":2}\n```\nmás'), { a: 2 });
+  assert.deepEqual(extraerJson('Resultado: {"a":3} fin'), { a: 3 });
+  assert.deepEqual(extraerJson('Para el campo {id} el resultado es {"id": 1}'), { id: 1 });
+  assert.deepEqual(extraerJson('{"borrador": 1}\n{"final": {"a": 2}}'), { final: { a: 2 } });
+  assert.equal(extraerJson('sin json'), undefined);
+  assert.equal(extraerJson('"solo un texto"'), undefined);
+});
+
+test('clasificar: textos reales de fallos transitorios, mudos y de salida larga', () => {
+  for (const texto of [
+    'The stream was interrupted. Please continue the task you were working on.',
+    'API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-medium on the server',
+    'INTERNAL (code 500): Internal error encountered.',
+  ]) {
+    assert.equal(clasificar({ json: { status: 'ERROR', error: texto, response: '' }, codigo: 1 }).estado, 'transitorio', texto);
+  }
+  // Un error permanente o una traza de Node no son transitorios.
+  for (const texto of ['Error: Cannot find module at node:internal/modules/cjs/loader', 'the requested tool is unavailable']) {
+    assert.equal(clasificar({ json: { status: 'ERROR', error: texto, response: '' }, codigo: 1 }).estado, 'error', texto);
+  }
+  const pt = '[agy] print timeout after 15m0s with turn in progress; returning partial output';
+  const mudo = clasificar({ json: { status: 'SUCCESS', response: '' }, stderr: pt, codigo: 0, fallosLog: ['stream reading error: stream idle timeout (5m0s): context deadline exceeded'] });
+  assert.equal(mudo.estado, 'modelo_mudo');
+  assert.equal(clasificar({ json: { status: 'SUCCESS', response: '' }, stderr: pt, codigo: 0, fallosLog: ['UNAVAILABLE (code 503)'] }).estado, 'timeout');
+  assert.equal(clasificar({ json: { status: 'SUCCESS', response: 'medio' }, stderr: pt, codigo: 0 }).estado, 'parcial');
+});
+
+// --- 0.4.0: lote ---
+
+function prepararLote(p, nombres) {
+  const raiz = join(p.base, 'lote');
+  for (const n of nombres) {
+    mkdirSync(join(raiz, n), { recursive: true });
+    writeFileSync(join(raiz, n, 'encargo.md'), `Encargo ${n}.\n`);
+  }
+  mkdirSync(join(raiz, 'sin-encargo'));
+  return raiz;
+}
+
+test('lote: corre cada subcarpeta con encargo.md, deja su resumen.json y devuelve una tabla', () => {
+  const p = preparar();
+  const raiz = prepararLote(p, ['a', 'b', 'c']);
+  const { codigo, resumen, llamadas, consultas } = correr(p, 'exito', ['--lote', raiz, '--paralelo', '2', '--modelo', 'rapido-low'], lista(LISTA_1025), { encargo: null });
+  assert.equal(codigo, 0);
+  assert.equal(resumen.estado, 'ok');
+  assert.deepEqual(resumen.encargos.map((e) => `${e.carpeta} ${e.estado} ${e.modelo}`), ['a ok gemini-3.8-flash-low', 'b ok gemini-3.8-flash-low', 'c ok gemini-3.8-flash-low']);
+  for (const n of ['a', 'b', 'c']) {
+    assert.equal(JSON.parse(readFileSync(join(raiz, n, 'resumen.json'), 'utf8')).estado, 'ok');
+    assert.ok(existsSync(join(raiz, n, 'respuesta.md')));
+  }
+  // Cada encargo trabaja en su propia subcarpeta, y la lista de modelos se pide una sola vez.
+  assert.deepEqual(llamadas.map((l) => basename(l.cwd)).sort(), ['a', 'b', 'c']);
+  assert.equal(consultas.length, 1);
+});
+
+test('lote: si uno falla, sale con 2 y dice cuál; más de 5 en paralelo se rechaza', () => {
+  const p = preparar();
+  const raiz = prepararLote(p, ['a', 'b']);
+  writeFileSync(join(raiz, 'b', '.env'), 'SECRETO=1\n');
+  const { codigo, resumen } = correr(p, 'exito', ['--lote', raiz], lista(LISTA_1025), { encargo: null });
+  assert.equal(codigo, 2);
+  assert.equal(resumen.estado, 'lote_con_fallos');
+  assert.match(resumen.detalle, /b \(secretos/);
+  const r = spawnSync(process.execPath, [script, '--lote', raiz, '--paralelo', '6'], { encoding: 'utf8', env: { ...process.env, AGY_BIN: falso } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /hasta 5/);
 });

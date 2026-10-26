@@ -3,9 +3,14 @@
 //   exito, edita, edita_ignorado, edita_add_dir, toca_encargo, denegado, denegado_url, vacio, modelo_invalido,
 //   json_roto, lento, auth, print_timeout
 //   cuota: los modelos de FAKE_AGY_CUOTA (separados por comas) responden con error de cuota; el resto, éxito.
+//   mudo: los modelos de FAKE_AGY_MUDOS (todos, si no se define) agotan el print timeout y dejan en
+//     DELEGAR_AGY_HOME/log un cli-*.log con «stream idle timeout»; el resto, éxito.
+//   transitorio: la primera llamada da 503 (o todas, con FAKE_AGY_SIEMPRE); parcial y salida_larga: error con
+//   respuesta; salida_larga_vacia; imagen (deja un .jpg en DELEGAR_AGY_HOME/brain/<id>/); json_en_texto;
+//   toca_otro_encargo (reescribe los archivos propios de otra carpeta de encargo dentro del --cwd).
 // `agy models` responde con FAKE_AGY_MODELOS (separados por comas; por defecto, la lista del 2026-10-12).
 // Como el agy real, un modelo que no está en esa lista da «invalid model selection» en cualquier escenario.
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { LISTA_1210, salidaModels } from './listas-modelos.mjs';
@@ -117,6 +122,76 @@ switch (escenario) {
       salir(fallo(error), 1, `error: ${error}`);
     }
     salir(exito(`Listo con ${modelo}.\n`));
+    break;
+  }
+  case 'mudo': {
+    const mudos = process.env.FAKE_AGY_MUDOS?.split(',');
+    if (mudos && !mudos.includes(modelo)) salir(exito(`Listo con ${modelo}.\n`));
+    // Líneas reales de cli-20261025_195337.log (agy 1.4.7), con otro id.
+    const id = 'aaaa1111-2222-3333-4444-555566667777';
+    const dir = join(process.env.DELEGAR_AGY_HOME, 'log');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `cli-${Date.now()}.log`),
+      [
+        `I1025 19:53:42.325734       1 server.go:1225] Created conversation ${id} (backend=BACKEND_TYPE_UNSPECIFIED)`,
+        'I1025 20:04:00.332556     780 run.go:301] Run: attempt 1 failed (stream reading error: stream idle timeout (5m0s): context deadline exceeded), retrying in 4s',
+        'W1025 20:08:42.424312       1 poll.go:188] Print mode: print timeout after 15m0s with turn in progress after 35242 polls (printed=10)',
+      ].join('\n') + '\n',
+    );
+    salir(
+      { ...exito('', { duration_seconds: 618.2, num_turns: 3 }), conversation_id: id },
+      0,
+      '[agy] print timeout after 15m0s with turn in progress; returning partial output',
+    );
+    break;
+  }
+  case 'transitorio': {
+    // Cuenta sus propias llamadas (sin las de `agy models`) en el registro de llamadas.
+    const previas = readFileSync(process.env.FAKE_AGY_REGISTRO, 'utf8')
+      .trim()
+      .split('\n')
+      .filter((l) => JSON.parse(l).args[0] !== 'models').length;
+    if (previas === 1 || process.env.FAKE_AGY_SIEMPRE) {
+      // Texto real del 2026-10-16 (historial de transcriptor-academico).
+      const error = `API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model ${modelo} on the server`;
+      salir({ ...fallo(error), duration_seconds: 542.1 }, 1, `error: ${error}`);
+    }
+    salir(exito(`Listo con ${modelo}.\n`));
+    break;
+  }
+  case 'parcial':
+    // Real del 2026-10-20 (Argon High, 19 min): error, pero la respuesta estaba completa.
+    salir({ ...fallo('The stream was interrupted. Please continue the task you were working on.'), response: '## Hallazgos\n1. Uno.\n2. Dos.\n', duration_seconds: 1158 }, 1);
+    break;
+  case 'salida_larga':
+  case 'salida_larga_vacia': {
+    // Real del 2026-10-22 (Flash High, 10 hallazgos).
+    const error = 'Your previous response was cut off because it exceeded the output token limit\nPlease continue from where you left off, keeping your response shorter\nRetries remaining: 3';
+    salir({ ...fallo(error), response: escenario === 'salida_larga' ? '## Hallazgos\n1. Uno.\n2. Do' : '', duration_seconds: 541 }, 1);
+    break;
+  }
+  case 'imagen': {
+    const id = '297fcc3e-19ea-4601-a61a-67a132cb03c1';
+    const dir = join(process.env.DELEGAR_AGY_HOME, 'brain', id);
+    mkdirSync(join(dir, '.system_generated', 'logs'), { recursive: true });
+    writeFileSync(join(dir, '.system_generated', 'logs', 'transcript.jsonl'), '{}\n');
+    writeFileSync(join(dir, 'logo_1761400000.jpg'), 'jpg');
+    salir(exito('No tengo una herramienta para generar imágenes.\n'));
+    break;
+  }
+  case 'json_en_texto':
+    salir(exito('Aquí está el resultado:\n```json\n{"hallazgos": [{"titulo": "uno"}]}\n```\nEspero que sirva.\n'));
+    break;
+  case 'toca_otro_encargo': {
+    // Otra delegación (anterior o en paralelo) reescribe sus archivos en su carpeta, dentro del --cwd.
+    const otra = join(process.cwd(), 'otro-encargo');
+    // FAKE_AGY_ARCHIVOS elige cuáles (p. ej., solo resumen.json, que en un lote aparece antes que agy-salida.json).
+    const nombres = process.env.FAKE_AGY_ARCHIVOS?.split(',') ?? ['agy-salida.json', 'respuesta.md', 'historial.jsonl', 'encargo.md'];
+    for (const n of nombres) writeFileSync(join(otra, n), `${Date.now()}\n`);
+    // Con FAKE_AGY_RAIZ, además edita un respuesta.md del proyecto, que no es de ninguna carpeta de encargo.
+    if (process.env.FAKE_AGY_RAIZ) writeFileSync(join(process.cwd(), 'respuesta.md'), 'editado por agy falso\n');
+    salir(exito('Listo.\n'));
     break;
   }
   case 'auth':

@@ -8,7 +8,7 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 a 15) y con la documentación
 |---|---|
 | `-p "<mensaje>"` | Ejecuta un mensaje y termina (alias `--print`, `--prompt`) |
 | `--output-format json` | Un solo objeto JSON al final; `stream-json` emite eventos NDJSON |
-| `--model <slug>` | Modelo exacto de `agy models`. El script acepta alias (`flash-medium`) y los resuelve con esa lista |
+| `--model <slug>` | Modelo exacto de `agy models`. El script acepta alias de gama (`rapido-medium`, `potente-high`) o de familia (`flash-medium`) y los resuelve con esa lista |
 | `--mode plan` | Según la documentación, solo herramientas de lectura. En modo no interactivo **no impide editar** (comprobado) y a veces prepara un plan en lugar de responder |
 | `--mode accept-edits` | Aprueba crear y editar archivos. Sin `--mode`, agy también edita en modo no interactivo (comprobado) |
 | `--sandbox` | Restringe la terminal al sandbox del sistema |
@@ -66,3 +66,15 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 a 15) y con la documentación
 | Los modelos cambian sin aviso: un nombre que ayer funcionaba da «invalid model selection» | El script resuelve alias con `agy models` y, con `--respaldo`, salta al siguiente |
 | En una revisión grande, agy gasta todo `--print-timeout` razonando y responde vacío | Pide un máximo de hallazgos; rescata la conversación con «entrega ya lo que tengas» |
 | Con `--mode accept-edits`, una vez agy quedó `incompleto` por `read_file` denegado, sin decir qué archivo; en modo lectura, la misma carpeta funcionó (causa sin confirmar) | Da rutas dentro de `--cwd`; si se repite, haz tú la edición |
+| En modo edición, «guárdalo en esta carpeta» hizo que agy escribiera junto al encargo y no en `--cwd` (2026-10-15) | Nombra la carpeta de destino con su ruta absoluta |
+| agy genera imágenes con un subagente (`generate_image`, que acepta fotos de entrada), pero las guarda en `brain/<conversación>/` como JPG y luego responde que no tiene esa herramienta (2026-10-20) | El script las lista en `generados`; cópialas tú. Con fotos de personas reales altera el rostro aunque el prompt lo prohíba |
+| `duration_seconds` del JSON es tiempo activo del modelo, no de reloj | El script mide el reloj aparte |
+
+## Log y carpeta de cada conversación
+
+- **`~/.gemini/antigravity-cli/log/cli-<AAAAMMDD_HHMMSS>.log`:** uno por ejecución. Trae `Created conversation <id>` y los reintentos internos de agy, que no salen en stderr ni en el JSON:
+  - `run.go] Run: attempt 1 failed (<motivo>), retrying in 4s`, donde el motivo es «stream idle timeout (5m0s)», «UNAVAILABLE (code 503)…» o «INTERNAL (code 500)…»;
+  - `poll.go] Print mode: print timeout after <t> with turn in progress after <n> polls (printed=<n>)`.
+
+  Los errores de los hooks de agy van a otro archivo, `~/.gemini/antigravity-cli/cli.log`. El script busca el log por el id de la conversación (variable `DELEGAR_AGY_HOME` para otra carpeta).
+- **`~/.gemini/antigravity-cli/brain/<id>/`:** lo que agy genera en esa conversación (imágenes, `plan.md`), más su transcripción interna en `.system_generated/`, que el script no lista.
