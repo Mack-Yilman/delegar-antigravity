@@ -6,7 +6,7 @@ El agente actúa como orquestador:
 
 1. **Decide si conviene delegar.** Sí para leer o resumir muchos archivos, borradores largos, cambios mecánicos en varios archivos, búsquedas amplias o una segunda opinión. No para tareas pequeñas, datos confidenciales ni acciones que requieren tu autorización.
 2. **Elige el modelo por gama y nivel de esfuerzo,** no por nombre, porque Antigravity cambia los modelos sin aviso: la gama rápida (Gemini Flash) para lo mecánico e intermedio, y la gama potente (hoy Gemini 4 Argon, antes Pro) para lo complejo. El script traduce la gama al mejor modelo de la lista vigente de `agy models`, así que una familia o versión nueva entra sola. Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
-3. **Escribe el encargo** en un archivo fuera de tu repositorio, con una plantilla que prohíbe a agy la terminal y la web, porque una sola petición le deja la respuesta vacía.
+3. **Escribe el encargo** en un archivo fuera de tu repositorio, en una carpeta única que crea el script (así dos sesiones en paralelo nunca comparten carpeta), con una plantilla que prohíbe a agy la terminal y la web, porque una sola petición le deja la respuesta vacía.
 4. **Ejecuta agy** con un script que devuelve un resumen de pocas líneas. La respuesta completa queda en un archivo.
 5. **Verifica** con el diff o las pruebas, corrige en la misma conversación si hace falta y te informa en pocas líneas.
 6. **Anota lo aprendido** en un registro central de incidencias, común a todos tus proyectos.
@@ -64,11 +64,25 @@ Pídelo con frases como «delega esto», «usa Antigravity», «usa agy», «que
 El script también se puede usar directamente:
 
 ```bash
-node skills/delegar-antigravity/scripts/agy.mjs --encargo encargo.md --cwd <proyecto> --modelo rapido-medium --modo lectura --respaldo
+# Crea una carpeta de encargo única e imprime su ruta; escribe ahí encargo.md
+node skills/delegar-antigravity/scripts/agy.mjs --carpeta resumen-src
+node skills/delegar-antigravity/scripts/agy.mjs --encargo <carpeta>/encargo.md --cwd <proyecto> --modelo rapido-medium --modo lectura --respaldo
 ```
+
+**Qué modelo pedir.** Se pide por gama y nivel de esfuerzo, y el script elige el mejor modelo que haya hoy:
+
+| Tarea | Alias |
+|---|---|
+| Mecánica: extraer, listar, formatear, resumir | `rapido-low` o `rapido-medium` (por defecto) |
+| Intermedia: borradores, refactorizaciones, revisar textos | `rapido-high` |
+| Compleja pero acotada: un error sutil en pocos archivos | `potente-medium` |
+| La más difícil: arquitectura, auditoría, revisión profunda | `potente-high` (de 5 a 20 min) |
+
+La gama rápida son las familias Flash; la potente, todas las demás (hoy Gemini 4 Argon). Una familia o versión nueva entra sola, sin actualizar la skill.
 
 | Opción | Para qué |
 |---|---|
+| `--carpeta <tema>` | Crea en `%TEMP%/delegar-antigravity/` una carpeta de encargo nueva (`<fecha>-<hora>-<tema>`, con sufijo si ya existe) e imprime su ruta |
 | `--modo lectura` / `edicion` | Solo lectura (por defecto) o crear y editar archivos |
 | `--modelos` | Lista los modelos vigentes por familia, qué familias hay en cada gama y a qué modelo se resuelve cada alias hoy |
 | `--modelo <alias o nombre>` | Un alias de gama (`rapido-low`, `rapido-medium`, `rapido-high`, `potente-low`, `potente-medium`, `potente-high`), de familia (`flash-high`, `argon-high`, `sonnet-low`…) o un nombre exacto. Se resuelve a la versión más alta de `agy models`; por defecto `rapido-medium`. Si una familia desaparece, su alias pasa a su gama (hoy `pro-high` usa Argon High) |
