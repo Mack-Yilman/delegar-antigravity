@@ -1,5 +1,22 @@
 # Historial de versiones
 
+## 0.4.0 — 2026-10-25
+
+Lo aprendido en diez días de uso real en siete proyectos: 10 incidencias y 12 lecciones del registro central, más las notas de cada proyecto.
+
+- **Modelos por gama y nivel de esfuerzo:** alias `rapido-low|medium|high` (las familias Flash, y cualquier `lite` o `nano` futura) y `potente-low|medium|high` (todas las demás: hoy Gemini 4 Argon). Una familia o versión nueva entra sola. Si una familia desaparece, su alias pasa a su gama (`pro-high` usa hoy Argon High). El modelo por defecto es `rapido-medium`. La skill enseña cuándo subir o bajar el nivel.
+- **Respaldo por gama:** lo potente cae en `rapido-high` sin pasar por otro nivel potente, porque el 25/10 Argon High y Medium se quedaron mudos el mismo día.
+- **`modelo_mudo`:** el script lee el log de agy de esa ejecución. Si el modelo agotó el tiempo con «stream idle timeout» (su llamada final no devolvió nada), ya no aconseja el rescate, que no sirve en ese caso, y con `--respaldo` cambia de modelo.
+- **`transitorio`:** «The stream was interrupted», 503 «No capacity» y 500. Con `--respaldo`, reintenta el mismo modelo una vez tras 60 s y luego sigue la cadena.
+- **`parcial`:** un error o un corte que dejó respuesta (pasó dos veces con la respuesta completa). El resumen pide leer `respuesta.md` antes de reintentar y, si se pasó el límite de salida, pedir como máximo 6 hallazgos.
+- **Tiempo de reloj:** el resumen mostraba `duration_seconds` de agy, que es tiempo activo (617 s en una corrida de 20 min). Ahora muestra los dos.
+- **`--lote <carpeta>`:** corre cada subcarpeta con `encargo.md`, hasta 5 a la vez, con una sola llamada y una tabla de resumen.
+- **`--esquema`:** si agy deja el JSON dentro del texto, el script lo extrae a `respuesta.json`; si no hay JSON, da `incompleto`.
+- **`brain/`:** el resumen lista lo que agy dejó en su carpeta de la conversación (imágenes, planes), aunque responda que no pudo hacerlo.
+- **Falso `edito_en_lectura`:** los archivos del script en otra carpeta de encargo dentro del espacio de trabajo ya no cuentan como tocados.
+- **`--carpeta <tema>`:** crea una carpeta de encargo nueva y única, y devuelve su ruta. En la evaluación, dos sesiones en paralelo eligieron el mismo nombre y una pisó el encargo de la otra; con la regla escrita en `SKILL.md`, otra sesión reutilizó igual una carpeta vieja.
+- **Plantilla y revisiones:** entregable con ruta absoluta en modo edición, como máximo 6 hallazgos en formato corto y revisiones sobre una copia con `git archive` cuando el repositorio tiene `CLAUDE.md` o secretos.
+
 ## 0.3.0 — 2026-10-15
 
 Corrige lo que salió al usar la skill en proyectos reales y lo que encontró una auditoría del repositorio.

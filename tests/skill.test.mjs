@@ -6,7 +6,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VECINOS, VERSION, resolverModelo } from '../skills/delegar-antigravity/scripts/agy.mjs';
-import { LISTA_1210 } from './listas-modelos.mjs';
+import { LISTA_1025 } from './listas-modelos.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const leer = (...ruta) => readFileSync(join(repo, ...ruta), 'utf8').replace(/\r\n/g, '\n');
@@ -101,7 +101,7 @@ test('SKILL.md no fija modelos con versión y sus alias se resuelven con la list
   const sufijo = [...prosa.matchAll(/`([a-z]+(?:-[a-z]+)*-(?:low|medium|high))`/g)].map((m) => m[1]);
   const alias = [...new Set([...columna, ...sufijo])];
   assert.ok(columna.length >= 6, `la tabla de modelos de SKILL.md no tiene alias: ${columna}`);
-  for (const a of alias) assert.ok(resolverModelo(a, LISTA_1210).slug, `alias sin resolver con la lista del 12/10: ${a}`);
+  for (const a of alias) assert.ok(resolverModelo(a, LISTA_1025).slug, `alias sin resolver con la lista del 25/10: ${a}`);
 });
 
 test('la plantilla del encargo prohíbe con fuerza la terminal y la web, y no recorta el entregable de lectura', () => {

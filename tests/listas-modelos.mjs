@@ -37,9 +37,29 @@ export const LISTA_1210 = [
   'gpt-oss-120b-medium',
 ];
 
+// agy 1.4.7, 2026-10-25: llegó Gemini 4 Argon (low, medium, high) y sigue sin haber Pro. En el orden de agy.
+export const LISTA_1025 = [
+  'gemini-4-argon-medium',
+  'gemini-4-argon-high',
+  'gemini-4-argon-low',
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-low',
+  'claude-opus-5-5-low',
+  'claude-opus-5-5-medium',
+  'claude-opus-5-5-high',
+  'claude-sonnet-5-5-low',
+  'claude-sonnet-5-5-medium',
+  'claude-sonnet-5-5-high',
+  'gpt-oss-120b-medium',
+];
+
 // Inventada: versiones nuevas de todas las familias, desordenadas a propósito (las más viejas primero), para que
-// el script no dependa del orden en que agy las lista.
+// el script no dependa del orden en que agy las lista. «xenon» es una familia potente que no existe: debe entrar
+// sola en la gama.
 export const LISTA_FUTURA = [
+  'gemini-5-xenon-medium',
+  'gemini-5-xenon-high',
   'gemini-3.8-flash-medium',
   'gemini-4.0-flash-high',
   'gemini-4.0-flash-medium',

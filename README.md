@@ -5,7 +5,7 @@ Una skill para que **Claude Code**, o cualquier otro LLM que disponga de una ter
 El agente actúa como orquestador:
 
 1. **Decide si conviene delegar.** Sí para leer o resumir muchos archivos, borradores largos, cambios mecánicos en varios archivos, búsquedas amplias o una segunda opinión. No para tareas pequeñas, datos confidenciales ni acciones que requieren tu autorización.
-2. **Elige el modelo** con la lista vigente de `agy models`, porque Antigravity cambia los modelos sin aviso: Gemini Flash para lo mecánico y Gemini Pro para lo difícil, si está disponible (si no, Flash High). Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
+2. **Elige el modelo por gama y nivel de esfuerzo,** no por nombre, porque Antigravity cambia los modelos sin aviso: la gama rápida (Gemini Flash) para lo mecánico e intermedio, y la gama potente (hoy Gemini 4 Argon, antes Pro) para lo complejo. El script traduce la gama al mejor modelo de la lista vigente de `agy models`, así que una familia o versión nueva entra sola. Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
 3. **Escribe el encargo** en un archivo fuera de tu repositorio, con una plantilla que prohíbe a agy la terminal y la web, porque una sola petición le deja la respuesta vacía.
 4. **Ejecuta agy** con un script que devuelve un resumen de pocas líneas. La respuesta completa queda en un archivo.
 5. **Verifica** con el diff o las pruebas, corrige en la misma conversación si hace falta y te informa en pocas líneas.
@@ -13,8 +13,8 @@ El agente actúa como orquestador:
 
 ```text
 estado: ok
-modelo: gemini-3.8-flash-medium (pedido: flash-medium)
-tiempo: 99 s · tokens de agy: 105521
+modelo: gemini-3.8-flash-medium (pedido: rapido-medium)
+tiempo: 104 s de reloj (agy: 99 s activos) · tokens de agy: 105521
 archivos tocados: src/almacen.js, src/clientes.js, src/envios.js, src/facturas.js, src/pedidos.js, src/productos.js
 respuesta (completa en …/respuesta.md):
 Renombré obtenerDato a leerDato en la definición, la exportación y las llamadas de los 6 archivos.
@@ -64,15 +64,17 @@ Pídelo con frases como «delega esto», «usa Antigravity», «usa agy», «que
 El script también se puede usar directamente:
 
 ```bash
-node skills/delegar-antigravity/scripts/agy.mjs --encargo encargo.md --cwd <proyecto> --modelo flash-medium --modo lectura --respaldo
+node skills/delegar-antigravity/scripts/agy.mjs --encargo encargo.md --cwd <proyecto> --modelo rapido-medium --modo lectura --respaldo
 ```
 
 | Opción | Para qué |
 |---|---|
 | `--modo lectura` / `edicion` | Solo lectura (por defecto) o crear y editar archivos |
-| `--modelos` | Lista los modelos vigentes por familia y a qué modelo se resuelve cada alias hoy |
-| `--modelo <alias o nombre>` | Un alias (`flash-low`, `flash-medium`, `flash-high`, `pro-low`, `pro-high`, `sonnet-low`…) que se resuelve a la versión más alta de `agy models`, o un nombre exacto; por defecto `flash-medium`. Sin Pro disponible, `pro-*` usa `flash-high` |
-| `--respaldo` | Ante un error de cuota o un modelo que ya no existe, prueba otro modelo Gemini |
+| `--modelos` | Lista los modelos vigentes por familia, qué familias hay en cada gama y a qué modelo se resuelve cada alias hoy |
+| `--modelo <alias o nombre>` | Un alias de gama (`rapido-low`, `rapido-medium`, `rapido-high`, `potente-low`, `potente-medium`, `potente-high`), de familia (`flash-high`, `argon-high`, `sonnet-low`…) o un nombre exacto. Se resuelve a la versión más alta de `agy models`; por defecto `rapido-medium`. Si una familia desaparece, su alias pasa a su gama (hoy `pro-high` usa Argon High) |
+| `--respaldo` | Reintenta una vez un fallo pasajero (sin capacidad, error interno, conexión cortada) y, ante un error de cuota, un modelo que ya no existe o uno que se quedó mudo, prueba otro modelo Gemini |
+| `--lote <carpeta>` | Corre cada subcarpeta que tenga `encargo.md`, hasta 5 a la vez (`--paralelo`), y devuelve una tabla |
+| `--esquema <archivo.json>` | Pide una respuesta estructurada; el JSON queda en `respuesta.json` aunque agy lo escriba dentro del texto |
 | `--permitir-secretos` | Ejecuta aunque el espacio de trabajo tenga `.env`, claves o credenciales; el agente solo lo usa con tu permiso |
 | `--conversacion <id>` | Continúa una conversación anterior, para corregir |
 | `--timeout <s>` | Tiempo límite, por defecto 600; usa 1200 para revisiones grandes |
@@ -81,13 +83,15 @@ node skills/delegar-antigravity/scripts/agy.mjs --encargo encargo.md --cwd <proy
 | `--anotar "<lección>"` | Guarda en el registro central la causa de un fallo y cómo se resolvió |
 | `--incidencias` | Resume en markdown el registro central: qué falla, con qué modelo y qué se aprendió |
 
-Códigos de salida: `0` ok, `2` incompleto (acción denegada o respuesta vacía) o archivos editados en una tarea de lectura, `3` cuota agotada, `4` secretos en el espacio de trabajo y `1` otros errores.
+Códigos de salida: `0` ok; `2` incompleto (acción denegada o respuesta vacía), parcial (un error que dejó respuesta), archivos editados en una tarea de lectura o un lote con fallos; `3` cuota agotada; `4` secretos en el espacio de trabajo y `1` otros errores (entre ellos `modelo_mudo` y `transitorio`).
+
+El script lee además el log que agy deja por cada ejecución en `~/.gemini/antigravity-cli/log/`, porque ahí quedan los reintentos internos que no salen en su salida: así distingue un modelo que se quedó mudo de un simple tiempo agotado. Y avisa si agy dejó archivos en su carpeta `brain/` (imágenes, planes) en lugar del proyecto.
 
 La lista de `agy models` tarda unos 12 s, así que el script la guarda unas horas en la carpeta temporal y la refresca si agy rechaza un modelo (o con `--refrescar-modelos`).
 
 **Lo que queda guardado:**
 
-- En la carpeta del encargo: `respuesta.md` con la respuesta completa, `agy-salida.json` y `agy-errores.txt` de la última ejecución, y `historial.jsonl` con una línea por ejecución.
+- En la carpeta del encargo: `respuesta.md` con la respuesta completa (y `respuesta.json` con `--esquema`), `agy-salida.json` y `agy-errores.txt` de la última ejecución, `historial.jsonl` con una línea por ejecución y, en un lote, `resumen.json`.
 - En `~/.delegar-antigravity/incidencias.jsonl`: un registro central, fuera de tus proyectos, de cada ejecución que no terminó en `ok` y de las lecciones anotadas con `--anotar`. Guarda el estado, el modelo, las acciones denegadas y el texto de error de agy, nunca el encargo ni la respuesta. Sirve para ver qué falla en todos tus proyectos y mejorar la skill. Puedes cambiar la ruta con la variable `DELEGAR_AGY_INCIDENCIAS`.
 
 ## Seguridad y privacidad
