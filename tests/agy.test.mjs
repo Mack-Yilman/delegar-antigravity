@@ -1,8 +1,8 @@
 // Pruebas de scripts/agy.mjs contra el agy falso (tests/fake-agy.mjs). No llaman al agy real.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,10 +27,17 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const script = join(repo, 'skills', 'delegar-antigravity', 'scripts', 'agy.mjs');
 const falso = join(repo, 'tests', 'fake-agy.mjs');
 
-// Un proyecto, una carpeta de encargo y una caché de modelos nuevos en cada prueba.
+// Un proyecto, una carpeta de encargo y una caché de modelos nuevos en cada prueba. Se borran al terminar:
+// hasta la 0.3.0 quedaban en la carpeta temporal (casi 4000 el 2026-10-25).
+const temporales = [];
+after(() => {
+  for (const t of temporales) rmSync(t, { recursive: true, force: true, maxRetries: 3 });
+});
+
 function preparar({ git = false } = {}) {
   // En el runner de Windows, tmpdir() da la ruta corta 8.3 (RUNNER~1) y el script usa la larga (realpath).
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'agy-prueba-')));
+  temporales.push(base);
   const proyecto = join(base, 'proyecto');
   const carpeta = join(base, 'encargo');
   mkdirSync(join(proyecto, 'src'), { recursive: true });
