@@ -7,7 +7,9 @@
 //     DELEGAR_AGY_HOME/log un cli-*.log con «stream idle timeout»; el resto, éxito.
 //   transitorio: la primera llamada da 503 (o todas, con FAKE_AGY_SIEMPRE); parcial y salida_larga: error con
 //   respuesta; salida_larga_vacia; imagen (deja un .jpg en DELEGAR_AGY_HOME/brain/<id>/); json_en_texto;
-//   toca_otro_encargo (reescribe los archivos propios de otra carpeta de encargo dentro del --cwd).
+//   toca_otro_encargo (reescribe los archivos propios de otra carpeta de encargo dentro del --cwd);
+//   pide_permiso (responde con líneas PERMISO:); comandos (deja una transcripción como la real, agy 1.4.12);
+//   denegado_fuera (pidió salir del sandbox, se le denegó y queda vacía la respuesta).
 // `agy models` responde con FAKE_AGY_MODELOS (separados por comas; por defecto, la lista del 2026-10-12).
 // Como el agy real, un modelo que no está en esa lista da «invalid model selection» en cualquier escenario.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -28,7 +30,7 @@ const lista = process.env.FAKE_AGY_MODELOS ? process.env.FAKE_AGY_MODELOS.split(
 for await (const _ of process.stdin);
 
 if (process.env.FAKE_AGY_REGISTRO) {
-  appendFileSync(process.env.FAKE_AGY_REGISTRO, JSON.stringify({ args, cwd: process.cwd() }) + '\n');
+  appendFileSync(process.env.FAKE_AGY_REGISTRO, JSON.stringify({ args, cwd: process.cwd(), entorno: Object.keys(process.env) }) + '\n');
 }
 
 if (args[0] === 'models') {
@@ -178,6 +180,32 @@ switch (escenario) {
     writeFileSync(join(dir, '.system_generated', 'logs', 'transcript.jsonl'), '{}\n');
     writeFileSync(join(dir, 'logo_1761400000.jpg'), 'jpg');
     salir(exito('No tengo una herramienta para generar imágenes.\n'));
+    break;
+  }
+  case 'pide_permiso':
+    salir(exito('Corregí el error y corrí las pruebas.\n\n- **PERMISO:** `git log --oneline -1` — para informar el último commit\nPERMISO: npm publish — para publicar\n'));
+    break;
+  case 'comandos':
+  case 'denegado_fuera': {
+    const id = '297fcc3e-19ea-4601-a61a-67a132cb03c1';
+    const dir = join(process.env.DELEGAR_AGY_HOME, 'brain', id, '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const hora = new Date().toISOString();
+    const pasos = [
+      { step_index: 0, type: 'USER_INPUT', created_at: '2020-01-01T00:00:00Z', tool_calls: [{ name: 'run_command', args: { CommandLine: '"de otro turno"' } }] },
+      { step_index: 1, type: 'PLANNER_RESPONSE', created_at: hora, tool_calls: [{ name: 'run_command', args: { BypassSandbox: 'false', CommandLine: '"node --test"' } }] },
+      { step_index: 2, type: 'PLANNER_RESPONSE', created_at: hora, tool_calls: [{ name: 'read_file', args: {} }] },
+    ];
+    if (escenario === 'denegado_fuera') {
+      pasos.push({ step_index: 3, type: 'PLANNER_RESPONSE', created_at: hora, tool_calls: [{ name: 'run_command', args: { BypassSandbox: 'true', CommandLine: '"git commit -m x"' } }] });
+    }
+    writeFileSync(join(dir, 'transcript.jsonl'), pasos.map((p) => JSON.stringify(p)).join('\n') + '\n');
+    if (escenario === 'comandos') salir(exito('Pruebas en verde.\n'));
+    salir(
+      exito('', { denied_actions: [{ action: 'command', display_name: 'RunCommand' }] }),
+      0,
+      'jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.',
+    );
     break;
   }
   case 'json_en_texto':

@@ -1,12 +1,12 @@
 ---
 name: delegar-antigravity
-description: "Delega subtareas pesadas a Antigravity CLI (agy) para ahorrar tus propios tokens: decides si conviene, eliges el modelo Gemini, escribes el encargo en un archivo, lo ejecutas con un script que devuelve un resumen breve y verificas el resultado. Úsala cuando el usuario diga «delega esto», «usa Antigravity», «usa agy», «que lo haga Gemini», «ahorra tokens», «pásaselo a otro agente» o «hazlo en paralelo con otro agente». Propón usarla por tu cuenta cuando la tarea sea grande y mecánica: leer o resumir muchos archivos, redactar borradores largos, refactorizaciones repetitivas en varios archivos, búsquedas amplias en un repositorio o una segunda opinión sobre un diff o un documento."
+description: "Delega subtareas pesadas a Antigravity CLI (agy) para ahorrar tus propios tokens: decides si conviene, eliges el modelo Gemini, escribes el encargo en un archivo, lo ejecutas con un script que devuelve un resumen breve y verificas el resultado. Úsala cuando el usuario diga «delega esto», «usa Antigravity», «usa agy», «que lo haga Gemini», «ahorra tokens», «pásaselo a otro agente» o «hazlo en paralelo con otro agente». Propón usarla por tu cuenta cuando la tarea sea grande y mecánica: leer o resumir muchos archivos, redactar borradores largos, refactorizaciones repetitivas en varios archivos, búsquedas amplias en un repositorio o una segunda opinión sobre un diff o un documento. También para que agy cree o arregle un proyecto corriendo sus comandos en un sandbox, con los accesos que tú le das en cada llamada («dale terminal a agy», «que agy pruebe lo que hace»)."
 license: CC BY-NC-ND 4.0
 ---
 
 ## Qué es
 
-Tú eres el orquestador y Antigravity CLI (`agy`) es un ayudante con su propia cuota de modelos. Tú decides qué delegar, redactas el encargo, revisas un resumen breve y verificas. agy hace el trabajo pesado: leer muchos archivos, generar texto largo o editar código.
+Tú eres el agente principal y Antigravity CLI (`agy`) es tu subagente, con su propia cuota de modelos. Tú decides qué delegar, redactas el encargo, revisas su plan, le abres o cierras accesos en cada llamada, respondes sus pedidos de permiso y verificas. agy hace el trabajo pesado: leer muchos archivos, generar texto largo, editar código y correr sus comandos. Nunca decide sus propios permisos.
 
 Delegar ahorra cuando lo que agy va a leer o escribir es mucho mayor que lo que te cuesta escribir el encargo (unas 20 líneas) y leer el resumen (unas 10). Cada llamada tarda entre 15 s y 20 min, y gasta entre 30 y 500 mil tokens de la cuota de Antigravity, no de la tuya: lo más caro son las revisiones de muchos archivos con un modelo de razonamiento alto.
 
@@ -17,6 +17,7 @@ Delegar ahorra cuando lo que agy va a leer o escribir es mucho mayor que lo que 
 | Leer, resumir o comparar muchos archivos o documentos largos | Delega en modo lectura |
 | Un borrador largo (documentación, informe, pruebas) con instrucciones claras | Delega; pide el borrador en un archivo |
 | Un cambio mecánico repetido en varios archivos (renombrar, migrar una API, formato) | Delega en modo edición |
+| Crear o arreglar algo que hay que probar mientras se hace (un proyecto, una función con sus pruebas) | Delega con plan y terminal (ver «Trabajar con agy como subagente») |
 | Buscar en todo un repositorio dónde se usa algo y explicarlo | Delega en modo lectura |
 | Una segunda opinión o una revisión de un diff, un plan o un texto | Delega en modo lectura, con otro modelo que el tuyo (ver «Revisiones y auditorías») |
 | Varias subtareas independientes a la vez | Un encargo por subcarpeta y una sola llamada con `--lote` (ver «Varios encargos a la vez»); como máximo 5 a la vez |
@@ -108,6 +109,8 @@ que está denegada, y la tarea queda incompleta>
 - **Terminal: PROHIBIDA.** No ejecutes ningún comando (ni node, ls, cat, git ni
   scripts): una sola petición deja VACÍA tu respuesta y se pierde todo el trabajo.
   <Si los archivos nombran comandos: «Sus resultados ya están en: <archivos>».>
+  <Si le das acceso con --acceso o --terminal, reemplaza esta línea por: «Terminal:
+  puedes usarla para <qué>. El script te dice cómo pedir lo que no tengas».>
 - **Web: PROHIBIDA.** No abras URL ni busques en internet: una URL denegada también
   deja vacía tu respuesta. Trabaja solo con los archivos de la lista.
 - Lee solo los archivos de la lista; no busques otros.
@@ -131,7 +134,7 @@ tocaste y qué dudas quedan». En modo lectura, quita esta sección: un límite 
 recortaría el entregable.>
 ```
 
-La terminal y la web están denegadas para agy, y basta una petición para vaciar la respuesta. Si la tarea necesita correr pruebas o comandos, córrelos tú antes o después y pásale la salida en un archivo. Cualquier archivo que nombre comandos (un README, un CLAUDE.md, una guía) tienta al modelo a pedir la terminal: por eso la restricción va en mayúsculas y dice dónde están los resultados.
+Sin los flags de acceso, la terminal y la web están denegadas para agy, y basta una petición para vaciar la respuesta. Si la tarea es de solo leer, déjalas así. Si necesita correr pruebas o comandos, dale acceso (ver «Trabajar con agy como subagente»). Cualquier archivo que nombre comandos (un README, un CLAUDE.md, una guía) tienta al modelo a pedir la terminal: por eso la restricción va en mayúsculas y dice dónde están los resultados.
 
 ### 2. Ejecutar con el script
 
@@ -141,6 +144,8 @@ node <carpeta de esta skill>/scripts/agy.mjs --encargo <carpeta>/encargo.md --cw
 
 - `--modo lectura` (por defecto) le pide no tocar archivos. La respuesta completa queda en `respuesta.md`, aunque sea larga. agy no garantiza la solo lectura (ningún modo de agy lo impide), así que el script avisa con `edito_en_lectura` si cambió algo.
 - `--modo edicion` le permite crear y editar archivos en el proyecto y en la carpeta del encargo.
+- `--modo plan` le pide pasos, archivos y los comandos que necesitará, sin tocar nada (ver «Trabajar con agy como subagente»).
+- `--acceso sandbox`, `--terminal "<comando>"` y `--web <dominio>` le dan acceso, solo para esa llamada.
 - `--respaldo` reintenta una vez un fallo pasajero de la plataforma y cambia a otro modelo Gemini si hay error de cuota, si el modelo ya no existe o si se quedó mudo. Úsalo salvo que el usuario haya pedido un modelo concreto.
 - `--timeout <s>` (por defecto 600). La gama rápida suele tardar menos de un minuto; las revisiones grandes y la gama potente, hasta 20.
 - `--esfuerzo low|medium|high` reemplaza el nivel que trae el nombre del modelo.
@@ -184,7 +189,9 @@ El tiempo de reloj es el que esperó el usuario; los segundos activos de agy sol
 | Estado | Qué hacer |
 |---|---|
 | `ok` | Verifica y sigue |
-| `incompleto` | agy intentó algo denegado o no respondió; `detalle` dice qué. Una sola denegación deja vacía toda la respuesta. Terminal o URL: refuerza la prohibición en el encargo y dale en un archivo lo que buscaba. MCP: quita esa herramienta del encargo. Leer un archivo: da rutas dentro del espacio de trabajo. Luego continúa la conversación |
+| `pide_permiso` | agy entregó lo que pudo y pide más acceso (`permisos_pedidos`). Decide cada pedido con la tabla de «Trabajar con agy como subagente» y continúa con `--conversacion`, diciéndole en `correccion.md` qué aprobaste y qué no |
+| `permiso_rechazado` | Pediste un acceso que el script nunca da; no se ejecutó nada. No lo rodees: si hace falta, hazlo tú con permiso del usuario |
+| `incompleto` | agy intentó algo denegado o no respondió; `detalle` dice qué y cuál fue el último comando. Una sola denegación deja vacía toda la respuesta. Terminal o URL: si el acceso se justifica, dáselo al continuar; si no, refuerza la prohibición y dale en un archivo lo que buscaba. Si pidió salir del sandbox, mira primero por qué falló dentro. MCP: quita esa herramienta del encargo. Leer un archivo: da rutas dentro del espacio de trabajo. Luego continúa la conversación |
 | `edito_en_lectura` | agy cambió archivos en una tarea de solo lectura. Revisa el diff de esos archivos y revierte lo que no se pidió, sin tocar cambios previos del usuario. Sin git, primero descarta que sean cambios tuyos |
 | `cuota` | Repite con `--respaldo` o con otro alias. Si todos fallan, hazlo tú o pregunta al usuario |
 | `parcial` | agy terminó con un error o un corte, pero dejó una respuesta. Lee `respuesta.md` antes de nada: suele estar completa o casi. Si está cortada, continúa con `--conversacion` pidiendo solo lo que falta; si el detalle habla del límite de salida, pide menos puntos y en formato corto |
@@ -222,15 +229,49 @@ node <carpeta de esta skill>/scripts/agy.mjs --anotar "<qué falló, por qué y 
 
 Por ejemplo: «Flash pidió la terminal porque el README del proyecto nombraba comandos; se resolvió dándole la salida en un archivo». No anotes lo que ya explica el `detalle` del resumen. Para ver qué falla más a menudo y qué se aprendió, en cualquier proyecto: `agy.mjs --incidencias`.
 
+## Trabajar con agy como subagente
+
+Para algo que haya que construir y probar, trabaja por turnos en la misma conversación:
+
+1. **Plan.** `--modo plan`: agy lee, propone pasos y escribe una línea `PERMISO: <comando> — <por qué>` por cada acceso que necesitará. El resumen los lista en `permisos_pedidos`.
+2. **Revisa.** Corrige el plan con `correccion.md` si hace falta y decide los accesos con la tabla de abajo.
+3. **Ejecución.** `--conversacion <id> --modo edicion --acceso sandbox`.
+4. **Pedidos.** Si responde `pide_permiso`, decide y continúa. Cada llamada da solo los accesos que traiga: los de la anterior ya no valen.
+5. **Verifica.** Mira `comandos` en el resumen (salen de la transcripción de agy, no de lo que dice), revisa el diff y corre tú las pruebas finales.
+
+| Nivel | Flag | Qué permite |
+|---|---|---|
+| Sin terminal | ninguno | Solo archivos del espacio de trabajo. Para leer, resumir y revisar |
+| Sandbox | `--acceso sandbox` | Cualquier comando dentro del sandbox: lee el proyecto y corre pruebas, pero **no escribe en ningún sitio** (agy edita con sus herramientas de archivos), sin red y sin ver el resto del perfil. **Es el acceso normal para arreglar y probar** |
+| Comando con nombre | `--terminal "npm run build"` (repetible) | Ese comando con sus argumentos, sin encadenar otros, y **puede salir del sandbox con todo el acceso del usuario**: escribir, usar la red y leer su perfil. Solo para lo que el sandbox no deja hacer |
+| Dominio | `--web docs.ejemplo.com` (repetible) | Leer ese dominio, y abrírselo a los comandos del sandbox |
+
+| Lo que agy necesita | Qué haces |
+|---|---|
+| Leer el proyecto, correr pruebas o lint | `--acceso sandbox` |
+| Compilar, generar archivos o instalar dependencias | Requiere salir del sandbox. Lee antes lo que va a ejecutar (`package.json`, el script, las dependencias nuevas) y autoriza ese comando con `--terminal` solo en esa llamada, o córrelo tú si prefieres no dárselo |
+| Consultar documentación de un dominio concreto | `--web` si le hace falta; si no, pásale el contenido en un archivo |
+| Hacer commit, push, publicar, desplegar, borrar o tocar servicios externos | Nunca a agy. Es tuyo, y requiere la autorización del usuario que corresponda |
+
+**`--terminal` es el permiso más serio.** Un comando que ejecuta código del proyecto (`npm run build`, `node build.js`) corre lo que diga ese código, y agy puede editarlo antes de lanzarlo: el límite ahí no es la regla, sino tu revisión del diff antes de autorizar. Si agy editó esos archivos en esta tarea, míralos antes de darle el comando.
+
+Esta tabla es tu criterio, también cuando el usuario pidió delegar. Si el usuario te pide expresamente algo de la última fila para agy, explícale que el script no lo permite y hazlo tú con su autorización.
+
+**Límites fijos.** El script rechaza con `permiso_rechazado`, sin lanzar nada: comodines, operadores (`& | ; $ < >`), terminales (`powershell`, `cmd`, `bash`), intérpretes sueltos o con código en línea (`node -e`), herramientas sin subcomando (`git`, `npm`), y lo destructivo o de red (`git push`, `git commit`, `git reset`, `gh`, `npm publish`, `wrangler deploy`, `rm`, `curl`…). Con terminal, además, quita del entorno de agy las variables con tokens y claves.
+
+**Lo que protege de verdad es el sandbox.** Las reglas de denegación que agrega el script son solo una ayuda: agy las burla encadenando comandos. Por eso verificas el diff y `comandos`, donde se marca lo que salió del sandbox. El sandbox deja leer la carpeta temporal del sistema y los `.env` del proyecto: sigue siendo el bloqueo `secretos` el que los protege, y no dejes nada sensible en la carpeta temporal mientras agy trabaja con terminal.
+
+Si un comando falla dentro del sandbox, agy puede reintentarlo fuera, se le deniega y su respuesta queda vacía (`incompleto`, con el aviso en `detalle`). Continúa con `--conversacion` y dile cómo seguir, sin darle más acceso del necesario.
+
 ## Revisiones y auditorías
 
 Una revisión de un diff grande o de un proyecto entero es lo que más tarda y más tokens gasta. Además, el modelo de agy puede desconocer APIs o versiones recientes y señalar como error algo que es válido.
 
-- Usa `--timeout 1200`, `--respaldo` y pide en el entregable como máximo 6 hallazgos, priorizados y en formato corto: con 10, la respuesta pasó el límite de salida.
+- Usa `--timeout 1200`, `--respaldo` y pide en el entregable como máximo 6 hallazgos, priorizados y en formato corto: con 10, la respuesta pasó el límite de salida. Flash también lo pasa si escribe su razonamiento en la respuesta: el script ya le pide que no lo haga, pero un diff más corto es lo que más ayuda.
 - Lista solo los archivos que importan; para un diff, guarda el diff en un archivo de la carpeta del encargo y pásale ese archivo.
 - Si el repositorio tiene `CLAUDE.md`, secretos o documentos que agy no debe ver, trabaja sobre una copia: `git archive HEAD` de los archivos que importan, desempaquetada en la carpeta del encargo, más el diff. Usa esa carpeta como `--cwd`.
 - Para una segunda opinión de criterio, `potente-high`; para una revisión mecánica (erratas, consistencia), `rapido-high`.
-- **Verifica cada hallazgo antes de aplicarlo:** lee el código señalado y, si el hallazgo depende de una API externa, confírmalo en su documentación. Descarta los falsos y dile al usuario cuántos hubo.
+- **Dale el estado actual del código, no solo el diff,** y **verifica cada hallazgo antes de aplicarlo:** en dos revisiones reales, entre 1 de cada 5 y 6 de cada 6 eran falsos u obsoletos. Lee el código señalado y, si el hallazgo depende de una API externa, confírmalo en su documentación. Descarta los falsos y dile al usuario cuántos hubo.
 - **Recalibra la gravedad:** los modelos rápidos tienden a inflarla y marcan una errata o un detalle de estilo como crítico. Asigna tú el nivel antes de informar.
 
 ## Seguridad
@@ -238,6 +279,6 @@ Una revisión de un diff grande o de un proyecto entero es lo que más tarda y m
 - Nunca uses `--dangerously-skip-permissions` sin un sí explícito del usuario para esa tarea.
 - Lo que agy lee sale a los servidores de Google: no delegues datos de pacientes, datos clínicos, datos personales, secretos, `.env` ni credenciales sin permiso explícito.
 - agy nunca hace commit, push ni publica nada. Tú revisas el diff antes de seguir y pides permiso al usuario para lo que lo requiera.
-- No cambies la configuración ni los permisos de agy (`settings.json`) sin pedirlo al usuario.
+- Da los accesos con los flags del script, que valen para una sola llamada. No cambies la configuración ni los permisos permanentes de agy (`settings.json`) sin pedirlo al usuario.
 
 Para los flags, el formato del JSON, los permisos y las trampas de la CLI, lee [references/agy-cli.md](references/agy-cli.md).
