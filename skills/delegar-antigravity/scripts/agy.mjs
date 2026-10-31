@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Delega un encargo a Antigravity CLI (agy) y devuelve un resumen breve.
 // Node >= 22, sin dependencias. Uso:
-//   node agy.mjs --encargo <archivo.md> [--modelo <alias|slug>] [--modo lectura|edicion] [--cwd <proyecto>]
+//   node agy.mjs --encargo <archivo.md> [--modelo <alias|slug>] [--modo lectura|plan|edicion] [--cwd <proyecto>]
+//                [--acceso sandbox] [--terminal "<comando>"]... [--web <dominio>]...
 //                [--esfuerzo low|medium|high] [--timeout <s>] [--conversacion <id>] [--esquema <archivo.json>]
 //                [--add-dir <carpeta>]... [--respaldo] [--permitir-secretos] [--refrescar-modelos]
 //                [--max-respuesta <n>] [--formato texto|json] [--seco]
@@ -14,8 +15,8 @@
 // Registro central: ~/.delegar-antigravity/incidencias.jsonl (o DELEGAR_AGY_INCIDENCIAS). Datos de agy (log/ y
 // brain/): ~/.gemini/antigravity-cli (o DELEGAR_AGY_HOME). Espera antes de reintentar un fallo transitorio:
 // DELEGAR_AGY_ESPERA segundos (60).
-// Códigos de salida: 0 ok; 2 incompleto, parcial, edito_en_lectura o un lote con fallos; 3 cuota agotada;
-// 4 secretos en el espacio de trabajo; 1 otro error.
+// Códigos de salida: 0 ok; 2 incompleto, parcial, edito_en_lectura, pide_permiso o un lote con fallos; 3 cuota
+// agotada; 4 secretos en el espacio de trabajo; 5 permiso_rechazado; 1 otro error.
 import { spawn, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
@@ -213,8 +214,8 @@ function agruparModelos(lista) {
 
 // --- Ejecución de agy ---
 
-const MODOS = { lectura: 'plan', edicion: 'accept-edits' };
-const CODIGOS = { ok: 0, seco: 0, modelos: 0, incompleto: 2, edito_en_lectura: 2, parcial: 2, cuota: 3, secretos: 4 };
+const MODOS = { lectura: 'plan', plan: 'plan', edicion: 'accept-edits' };
+const CODIGOS = { ok: 0, seco: 0, modelos: 0, incompleto: 2, edito_en_lectura: 2, parcial: 2, pide_permiso: 2, cuota: 3, secretos: 4, permiso_rechazado: 5 };
 
 // Textos con los que agy (o el servicio detrás) avisa de cada problema. El de cuota aún no se ha visto en
 // real: cuando aparezca, copia su texto en references/modelos.md y ajusta CUOTA si no coincide.
@@ -229,22 +230,175 @@ const TRANSITORIO = /stream was interrupted|no capacity available|\bcode 50[0234
 const SALIDA_LARGA = /output token limit/i;
 // En cli.log, el modelo abrió su llamada final y no devolvió nada en 5 min (Argon, 20/10 y 25/10).
 const MUDO = /stream idle timeout/i;
-const CONSEJO_SALIDA = ' Pide como máximo 6 hallazgos o puntos, en formato corto.';
+const CONSEJO_SALIDA = ' Pide como máximo 6 hallazgos o puntos, en formato corto y sin razonamiento en la respuesta.';
 const EXPLICA_DENEGADO = {
-  command: 'la terminal (agy no puede ejecutar comandos: quita esa necesidad del encargo y córrelos tú)',
+  command: 'la terminal, sin permiso para ese comando (decide tú: dale acceso con --acceso sandbox o --terminal "<comando>" al continuar con --conversacion, o córrelo tú)',
   mcp: 'una herramienta MCP (sin regla mcp(servidor/herramienta) en permissions.allow: quítala del encargo o pide al usuario que la permita)',
   read_file: 'leer un archivo (quizá fuera del espacio de trabajo: da rutas dentro de --cwd o agrega la carpeta con --add-dir)',
-  read_url: 'abrir una URL (prohíbe la web en el encargo y dale el contenido en un archivo)',
+  read_url: 'abrir una URL (dale acceso con --web <dominio> o pásale el contenido en un archivo)',
 };
 
-export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600, esfuerzo, conversacion, esquema, addDirs = [], cwd }) {
+// --- Permisos por encargo ---
+// agy deniega la terminal en modo no interactivo salvo que una regla la permita. --settings da esas reglas solo para
+// esta ejecución, sin tocar settings.json: el orquestador abre y cierra accesos en cada llamada, y agy no decide nada.
+// Comprobado con agy 1.4.12 (2026-10-31): el sandbox de Windows no deja leer el perfil, no deja a los comandos escribir
+// en ningún sitio (tampoco en el proyecto, aunque la documentación diga lo contrario) y no tiene red. Es el límite
+// real: las reglas «deny» no ven un comando prohibido encadenado con «;».
+
+const SHELLS = /^(?:powershell|pwsh|cmd|bash|sh|zsh|wsl)(?:\.exe)?(?:\s|$)/i;
+// Un intérprete debe nombrar qué corre: con una opción delante, la regla le dejaría agregar -c o -e (node --test y
+// python -m sí nombran qué corren).
+const INTERPRETES = /^(?:node|python3?|py|ruby|perl|deno|bun)(?:$|\s+(?!--test(?:\s|$)|-m\s)-|\s+eval(?:\s|$))/i;
+// Una herramienta sin subcomando, o con una opción antes de él (git -C . push), autorizaría los prohibidos.
+const SIN_SUBCOMANDO = /^(?:git|npm|pnpm|yarn|npx|wrangler|docker|cargo|go)(?:$|\s+-)/i;
+const PROHIBIDOS = [
+  'git\\s+(?:push|commit|reset|clean)',
+  'gh',
+  '(?:npm|pnpm|yarn)\\s+publish',
+  'wrangler\\s+(?:deploy|publish|delete|secret)',
+  'cf',
+  'rm',
+  'rmdir',
+  'rd',
+  'del',
+  'Remove-Item',
+  'curl',
+  'wget',
+  'iwr',
+  'irm',
+  'Invoke-WebRequest',
+  'Invoke-RestMethod',
+  'sudo',
+  'runas',
+  'format',
+];
+const REGLAS_DENY = PROHIBIDOS.map((c) => `command(regex:(?i)^${c}(\\s.*)?$)`);
+const ES_PROHIBIDO = new RegExp(`^(?:${PROHIBIDOS.join('|')})(?:\\s|$)`, 'i');
+
+// Devuelve el motivo por el que no se autoriza un comando, o null.
+export function motivoRechazoComando(comando) {
+  if (!comando || comando === '*') return 'un comodín o un comando vacío autorizaría cualquier cosa';
+  if (/[&|;$<>`\r\n]/.test(comando)) return 'no puede llevar operadores ni variables de la terminal (& | ; $ < > y comillas invertidas)';
+  // curl.exe o C:\x\gh.exe son lo mismo que curl y gh.
+  comando = comando.replace(/^\S*[\\/]/, '').replace(/^(\S+?)\.(?:exe|cmd|bat|ps1)(?=\s|$)/i, '$1');
+  if (SHELLS.test(comando)) return 'una terminal dentro de la terminal ejecutaría cualquier cosa';
+  if (INTERPRETES.test(comando)) return 'un intérprete suelto o con código en línea ejecutaría cualquier cosa: nombra el script o usa --acceso sandbox';
+  if (SIN_SUBCOMANDO.test(comando)) return 'nombra el subcomando (por ejemplo, «git status» o «npm test»)';
+  if (ES_PROHIBIDO.test(comando)) return 'publicar, borrar, confirmar o salir a la red lo hace el orquestador, con permiso del usuario';
+  return null;
+}
+
+// Exacto, con argumentos, sin poder encadenar nada: en Windows, un comando con subcomandos también exige regex.
+// Flash suele anteponer «Set-Location "<carpeta>"; »: sin este prefijo se le denegaba el comando que se le autorizó.
+// Solo espacios y tabuladores: un salto de línea encadena comandos igual que «;», y \s y [^…] lo aceptarían.
+const PREFIJO_CARPETA = `(?:(?:Set-Location|cd)(?:[ \\t]+-Path)?[ \\t]+[^&|;$<>\`\\r\\n]+;[ \\t]*)?`;
+export const reglaComando = (comando) =>
+  `command(regex:^${PREFIJO_CARPETA}${comando.replace(/[.*+?^()[\]{}\\/]/g, '\\$&').replace(/\s+/g, '[ \\t]+')}([ \\t][^&|;$<>\`\\r\\n]*)?$)`;
+
+// Devuelve los ajustes de esta sesión, o null si no se dio ningún acceso (entonces no se pasa --settings).
+// Con «permissions», --settings reemplaza las reglas de settings.json (2026-10-31: se perdieron las MCP del usuario):
+// se copian para que sus allow, ask y, sobre todo, sus deny sigan vigentes.
+export function armarAjustes({ sandbox = false, terminal = [], web = [], usuario = {} }) {
+  if (!sandbox && !terminal.length && !web.length) return null;
+  const lista = (clave) => (Array.isArray(usuario[clave]) ? usuario[clave] : []);
+  const ajustes = {
+    enableTerminalSandbox: true,
+    permissions: {
+      allow: [...lista('allow'), ...terminal.map(reglaComando), ...web.map((d) => `read_url(${d})`)],
+      ask: lista('ask'),
+      deny: [...lista('deny'), ...REGLAS_DENY],
+    },
+  };
+  if (sandbox) ajustes.toolPermission = 'proceed-in-sandbox';
+  return ajustes;
+}
+
+function permisosDelUsuario() {
+  try {
+    return JSON.parse(readFileSync(join(carpetaAgy(), 'settings.json'), 'utf8')).permissions ?? {};
+  } catch {
+    return {};
+  }
+}
+
+// Con terminal, los comandos de agy heredan el entorno y su salida va a Google (2026-10-31: se veían los tokens de
+// Claude Code). Se conservan solo las credenciales con las que agy mismo puede iniciar sesión.
+const VARIABLE_SENSIBLE = /token|secret|passw|credential|key$|_key_|_pat$|_dsn$|^claude|^anthropic/i;
+const URL_CON_CLAVE = /:\/\/[^/\s:@]*:[^/\s@]+@/;
+const CREDENCIALES_DE_AGY = new Set(['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS']);
+export const entornoSinSecretos = (entorno) =>
+  Object.fromEntries(Object.entries(entorno).filter(([k, v]) => CREDENCIALES_DE_AGY.has(k.toUpperCase()) || !(VARIABLE_SENSIBLE.test(k) || URL_CON_CLAVE.test(v))));
+
+// Los pedidos de agy, una línea «PERMISO: <comando> — <por qué>», aunque venga en una lista, en negrita o con comillas.
+// En mayúsculas, como se le pide: «Permiso: solo lectura» es texto normal de una respuesta.
+export function extraerPermisos(texto) {
+  const pedidos = [...texto.matchAll(/^[\s>*_`«"'-]*PERMISO\b[*_]*:[*_]*\s*(.+?)[\s»"]*$/gm)].map((m) => m[1].replace(/\*\*/g, ''));
+  return [...new Set(pedidos)];
+}
+
+// Lo que agy pidió ejecutar, según su transcripción: el resumen no se fía de lo que dice su respuesta.
+export function comandosDeAgy(conversacion, desde) {
+  if (!conversacion) return [];
+  let texto;
+  try {
+    texto = readFileSync(join(carpetaAgy(), 'brain', conversacion, '.system_generated', 'logs', 'transcript.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+  const comandos = [];
+  for (const linea of texto.split('\n')) {
+    let paso;
+    try {
+      paso = JSON.parse(linea);
+    } catch {
+      continue;
+    }
+    if (Date.parse(paso.created_at) < desde - 2000) continue;
+    for (const llamada of paso.tool_calls ?? []) {
+      if (llamada.name !== 'run_command' || !llamada.args?.CommandLine) continue;
+      let comando = llamada.args.CommandLine;
+      try {
+        comando = JSON.parse(comando);
+      } catch {}
+      comandos.push({ comando: String(comando).slice(0, 200), fuera_del_sandbox: String(llamada.args.BypassSandbox) === 'true' || undefined });
+    }
+  }
+  return comandos.slice(-20);
+}
+
+const PIDE_PERMISO =
+  ' Si necesitas un comando o un acceso que no tienes, no lo intentes: una sola petición denegada vacía tu respuesta y pierdes todo el trabajo. Termina lo que puedas, entrégalo y agrega una línea por pedido: «PERMISO: <comando exacto> — <por qué>». Tu orquestador decide y te responde.';
+const CON_TERMINAL =
+  ' Tu orquestador te da acceso a la terminal para esta tarea. Los comandos corren en un sandbox: pueden leer el proyecto y correr pruebas, pero no escribir archivos ni usar la red. Edita los archivos con tus herramientas de edición, no con comandos. Si un comando falla por el sandbox, no lo reintentes fuera de él (BypassSandbox): se denegará.';
+// Con --add-dir, los comandos arrancan en una carpeta que no se controla (ni el orden ni el directorio de lanzamiento
+// la fijaron el 2026-10-31), casi nunca el proyecto. El prefijo es determinista y la regla de --terminal lo admite.
+const ENTRAR_AL_PROYECTO = (cwd) => ` Tus comandos arrancan en otra carpeta: empieza cada uno exactamente con Set-Location "${cwd}"; y luego el comando, sin git -C ni rutas relativas a otra carpeta.`;
+// Según la documentación, una regla allow deja salir del sandbox; comprobado el 2026-10-31: sin BypassSandbox sigue dentro.
+const POR_NOMBRE = (comandos) =>
+  ` Excepción: estos comandos, y solo estos, puedes correrlos con BypassSandbox=true si necesitan escribir o usar la red: ${comandos.join(', ')}. Tras el Set-Location, escríbelos tal cual, sin rutas absolutas, y uno por llamada.`;
+// El historial de la conversación aún dice que tenía terminal: sin este aviso, la pide y vacía su respuesta.
+const SIN_ACCESO_AHORA = ' En esta llamada ya no tienes acceso a la terminal: no ejecutes comandos.';
+const SIN_RAZONAMIENTO = ' Tu respuesta final es solo el entregable: sin razonamiento, borradores ni notas de lo que vas pensando.';
+
+export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600, esfuerzo, conversacion, esquema, addDirs = [], cwd, ajustes, conTerminal = false, terminal = [], accesoRetirado = false }) {
   // --mode plan no impide escribir en modo no interactivo, y a veces prepara un plan en lugar de responder:
   // el mensaje lo deja explícito y el script detecta después cualquier archivo tocado.
+  const POR_MODO = {
+    lectura:
+      ' Es una tarea de solo lectura: no crees, modifiques ni borres archivos, y responde directamente con el resultado en tu respuesta final, sin preparar un plan ni pedir confirmación.' +
+      SIN_RAZONAMIENTO,
+    plan:
+      ` Es la fase de plan: no crees, modifiques ni borres archivos${conTerminal ? '' : ', ni ejecutes comandos'}. Responde directamente, sin pedir confirmación, con los pasos, los archivos que tocarás y una línea por cada comando o acceso que vas a necesitar: «PERMISO: <comando exacto> — <por qué>».` +
+      SIN_RAZONAMIENTO,
+    edicion: '',
+  };
   const mensaje =
     `Lee el archivo ${encargo} y cumple el encargo que contiene.` +
-    (modo === 'lectura'
-      ? ' Es una tarea de solo lectura: no crees, modifiques ni borres archivos, y responde directamente con el resultado en tu respuesta final, sin preparar un plan ni pedir confirmación.'
-      : '');
+    POR_MODO[modo] +
+    (conTerminal ? CON_TERMINAL + (cwd ? ENTRAR_AL_PROYECTO(cwd) : '') : '') +
+    (terminal.length ? POR_NOMBRE(terminal) : '') +
+    (accesoRetirado && !conTerminal ? SIN_ACCESO_AHORA : '') +
+    (conTerminal || ajustes ? PIDE_PERMISO : '');
   // agy rechaza un nivel en el nombre más --effort («conflicts with --effort»): con esfuerzo, va el nombre base.
   const nombre = esfuerzo ? modelo.replace(/-(low|medium|high)$/, '') : modelo;
   const args = ['-p', mensaje, '--model', nombre, '--mode', MODOS[modo], '--sandbox'];
@@ -255,6 +409,7 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600
   if (esfuerzo) args.push('--effort', esfuerzo);
   if (conversacion) args.push('--conversation', conversacion);
   if (esquema) args.push('--json-schema', esquema);
+  if (ajustes) args.push('--settings', ajustes);
   return args;
 }
 
@@ -395,7 +550,7 @@ function matarArbol(pid) {
 // un nieto de agy que sobreviva podría retenerla y bloquear al orquestador.
 // Si el proceso no muere tras matarlo (pasó una vez que el tiempo límite no cortó una tarea de 20 min),
 // se vuelve igual a los `esperaTrasMatar` ms: el orquestador nunca espera para siempre.
-export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = matarArbol, esperaTrasMatar = 15000 }) {
+export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = matarArbol, esperaTrasMatar = 15000, env = process.env }) {
   return new Promise((listo) => {
     const out = openSync(salida, 'w');
     const err = openSync(errores, 'w');
@@ -416,6 +571,7 @@ export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = ma
     };
     const hijo = spawn(comando, [...previos, ...args], {
       cwd,
+      env,
       stdio: ['ignore', out, err],
       windowsHide: true,
       detached: process.platform !== 'win32',
@@ -435,7 +591,7 @@ export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = ma
 const IGNORADAS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next']);
 const TOPE_ARCHIVOS = 20000;
 // Lo que el script escribe junto al encargo: no son cambios de agy.
-const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'respuesta.json', 'historial.jsonl', 'resumen.json', 'lote-errores.txt'];
+const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'respuesta.json', 'historial.jsonl', 'resumen.json', 'lote-errores.txt', 'agy-permisos.json'];
 // Lo que escribe el orquestador para agy. Editarlo mientras agy trabaja (p. ej., reforzar el encargo de varias
 // tareas en paralelo) daba un falso edito_en_lectura.
 const ENTRADAS = ['encargo.md', 'correccion.md'];
@@ -651,6 +807,13 @@ function imprimir(resumen, formato) {
     const lista = resumen.archivos === null ? 'no se sabe (proyecto sin git y demasiado grande)' : resumen.archivos.join(', ') || 'ninguno';
     lineas.push(`archivos tocados: ${lista}${resumen.sin_git ? ' (sin git: incluye cambios de cualquier proceso)' : ''}`);
   }
+  if (resumen.accesos) lineas.push(`accesos dados: ${resumen.accesos.join(', ')}`);
+  if (resumen.comandos?.length) {
+    lineas.push(`comandos de agy: ${resumen.comandos.map((c) => c.comando + (c.fuera_del_sandbox ? ' (pidió salir del sandbox)' : '')).join(' | ')}`);
+  }
+  if (resumen.permisos_pedidos?.length) {
+    lineas.push('permisos que pide agy:', ...resumen.permisos_pedidos.map((p) => `  - ${p}`));
+  }
   if (resumen.fallos_log?.length) lineas.push(`reintentos internos de agy: ${resumen.fallos_log.join(' | ')}`);
   if (resumen.generados?.length) lineas.push(`generados por agy fuera del proyecto: ${resumen.generados.join(', ')}`);
   if (resumen.respuesta_json) lineas.push(`json: ${resumen.respuesta_json}`);
@@ -686,7 +849,7 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 
 function archivoIncidencias() {
   return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
@@ -823,6 +986,9 @@ async function correrLote(o, cwdComun) {
   const comunes = ['--modelo', o.modelo, '--modo', o.modo, '--timeout', o.timeout, '--margen', o.margen, '--max-respuesta', o['max-respuesta'], '--formato', 'json'];
   if (o.esfuerzo) comunes.push('--esfuerzo', o.esfuerzo);
   for (const flag of ['respaldo', 'permitir-secretos', 'seco']) if (o[flag]) comunes.push(`--${flag}`);
+  if (o.acceso) comunes.push('--acceso', o.acceso);
+  for (const c of o.terminal) comunes.push('--terminal', c);
+  for (const d of o.web) comunes.push('--web', d);
   for (const dir of o['add-dir']) comunes.push('--add-dir', resolve(dir));
   // Una sola consulta de modelos antes de lanzar: así los hijos usan la caché en lugar de pedirla 5 veces.
   const bin = ubicarAgy();
@@ -903,6 +1069,9 @@ async function principal() {
       conversacion: { type: 'string' },
       esquema: { type: 'string' },
       'add-dir': { type: 'string', multiple: true, default: [] },
+      acceso: { type: 'string' },
+      terminal: { type: 'string', multiple: true, default: [] },
+      web: { type: 'string', multiple: true, default: [] },
       respaldo: { type: 'boolean', default: false },
       'permitir-secretos': { type: 'boolean', default: false },
       modelos: { type: 'boolean', default: false },
@@ -936,12 +1105,27 @@ async function principal() {
     else process.stdout.write(ruta.replace(/\\/g, '/') + '\n');
     return 0;
   }
+  // Antes de nada: un acceso rechazado no debe lanzar ni un solo encargo.
+  o.terminal = o.terminal.map((c) => c.trim().replace(/\s+/g, ' '));
+  o.web = o.web.map((d) => d.trim().toLowerCase());
+  const rechazos = [
+    ...(o.acceso !== undefined && o.acceso !== 'sandbox' ? [`--acceso «${o.acceso}»: el único valor es sandbox`] : []),
+    ...o.terminal.flatMap((c) => {
+      const motivo = motivoRechazoComando(c);
+      return motivo ? [`--terminal «${c}»: ${motivo}`] : [];
+    }),
+    ...o.web.filter((d) => !/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/.test(d)).map((d) => `--web «${d}»: da un dominio concreto, sin comodines ni rutas`),
+  ];
+  if (rechazos.length) {
+    imprimir({ estado: 'permiso_rechazado', detalle: `No se ejecutó nada. ${rechazos.join('; ')}.` }, o.formato);
+    return CODIGOS.permiso_rechazado;
+  }
   if (o.lote !== undefined) return correrLote(o, cwdComun);
   let encargo, cwd, timeout, margen, maxRespuesta;
   if (!o.modelos) {
     if (!o.encargo) throw new Error('falta --encargo <archivo>');
     if (!existsSync(o.encargo)) throw new Error(`no existe el encargo: ${resolve(o.encargo)}`);
-    if (!MODOS[o.modo]) throw new Error(`--modo debe ser lectura o edicion, no «${o.modo}»`);
+    if (!MODOS[o.modo]) throw new Error(`--modo debe ser lectura, plan o edicion, no «${o.modo}»`);
     if (!existsSync(o.cwd)) throw new Error(`no existe --cwd: ${resolve(o.cwd)}`);
     timeout = entero('timeout', o.timeout);
     margen = entero('margen', o.margen);
@@ -966,7 +1150,21 @@ async function principal() {
 
   const carpeta = dirname(encargo);
   const addDirs = o['add-dir'].map((d) => rutaReal(d));
+  const conTerminal = o.acceso === 'sandbox' || o.terminal.length > 0;
+  const ajustes = armarAjustes({ sandbox: o.acceso === 'sandbox', terminal: o.terminal, web: o.web, usuario: permisosDelUsuario() });
+  const archivoPermisos = join(carpeta, 'agy-permisos.json');
+  // Cada llamada da sus propios accesos: al continuar sin flags, no queda ninguno de la anterior.
+  const accesoRetirado = Boolean(o.conversacion) && existsSync(archivoPermisos);
+  rmSync(archivoPermisos, { force: true });
+  if (ajustes) writeFileSync(archivoPermisos, JSON.stringify(ajustes, null, 2) + '\n');
+  const accesos = ajustes
+    ? [...(o.acceso === 'sandbox' ? ['sandbox'] : []), ...o.terminal.map((c) => `terminal: ${c}`), ...o.web.map((d) => `web: ${d}`)]
+    : undefined;
   const opciones = {
+    ajustes: ajustes ? archivoPermisos : undefined,
+    conTerminal,
+    terminal: o.terminal,
+    accesoRetirado,
     encargo,
     modo: o.modo,
     timeout,
@@ -1037,6 +1235,15 @@ async function principal() {
 
   const extras = [carpeta, ...addDirs];
   const antes = fotoArchivos(cwd, extras);
+  // Un comando autorizado con --terminal corre fuera del sandbox y podría darse permisos permanentes.
+  const fechaAjustes = () => {
+    try {
+      return statSync(join(carpetaAgy(), 'settings.json')).mtimeMs;
+    } catch {
+      return null;
+    }
+  };
+  const ajustesAntes = fechaAjustes();
   const intentos = [];
   const registros = [];
   const probados = new Set();
@@ -1060,6 +1267,7 @@ async function principal() {
       salida,
       errores,
       limiteMs: (timeout + margen) * 1000,
+      env: ajustes ? entornoSinSecretos(process.env) : process.env,
     });
     const json = leerJson(salida);
     const stderr = readFileSync(errores, 'utf8');
@@ -1118,8 +1326,20 @@ async function principal() {
   const despues = fotoArchivos(cwd, extras);
   const excluir = [...PROPIOS, ...ENTRADAS].map((n) => join(carpeta, n)).concat(encargo);
   const archivos = archivosTocados(antes, despues, excluir);
-  if (o.modo === 'lectura' && archivos?.length) {
+  if (o.modo !== 'edicion' && archivos?.length) {
     marcar('edito_en_lectura', 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.');
+  }
+  const idConversacion = json?.conversation_id || opciones.conversacion;
+  const comandos = comandosDeAgy(idConversacion, final.inicio);
+  registros.at(-1).comandos = comandos.length ? comandos : undefined;
+  registros.at(-1).accesos = accesos;
+  const permisosPedidos = extraerPermisos(json?.response ?? '');
+  if (permisosPedidos.length && final.estado === 'ok' && o.modo !== 'plan') {
+    marcar('pide_permiso', 'agy entregó lo que pudo y pide más acceso. Decide cada pedido: continúa con --conversacion y los --terminal o --web que apruebes, o responde en correccion.md por qué no.');
+  }
+  if (final.denegado?.includes('command') && comandos.length) {
+    const ultimo = comandos.at(-1);
+    final.detalle += ` Último comando pedido: «${ultimo.comando}»${ultimo.fuera_del_sandbox ? ', fuera del sandbox: reintentó así porque dentro falló; mira por qué falló antes de darle más acceso' : ''}.`;
   }
   // Una línea por ejecución: agy-salida.json y agy-errores.txt se sobrescriben en cada intento y en cada
   // continuación, y un fallo raro (cuota, cuelgue) no se repite a pedido.
@@ -1128,7 +1348,8 @@ async function principal() {
   } catch {}
   // Al registro central va toda ejecución con algún intento fallido, aunque el respaldo haya terminado en ok
   // (así se captura el texto real de un error de cuota).
-  const fallido = registros.find((r) => r.estado !== 'ok');
+  // Pedir permiso no es un fallo: es el flujo normal.
+  const fallido = registros.find((r) => !['ok', 'pide_permiso'].includes(r.estado));
   if (fallido) {
     registrarIncidencia({
       tipo: 'incidencia',
@@ -1142,13 +1363,17 @@ async function principal() {
       segundos_agy: registros.at(-1).segundos_agy,
       tokens: registros.at(-1).tokens,
       denegado: fallido.denegado,
+      accesos,
       fallos_log: registros.flatMap((r) => r.fallos_log ?? []).slice(0, 5).join(' | ') || undefined,
       detalle: final.estado === 'ok' ? undefined : final.detalle?.slice(0, 300),
       stderr: fallido.stderr?.slice(0, 300),
     });
   }
   if (final.estado === 'modelo_invalido') await refrescar();
-  const generados = generadosEnBrain(json?.conversation_id || opciones.conversacion, final.inicio);
+  const generados = generadosEnBrain(idConversacion, final.inicio);
+  if (ajustes && fechaAjustes() !== ajustesAntes) {
+    lista.aviso = [lista.aviso, 'settings.json de agy cambió durante esta ejecución: revísalo, puede haberse dado permisos permanentes.'].filter(Boolean).join(' ');
+  }
   const resumen = {
     estado: final.estado,
     modelo: final.modelo,
@@ -1160,6 +1385,9 @@ async function principal() {
     tokens: json?.usage?.total_tokens,
     conversacion: json?.conversation_id || undefined,
     archivos,
+    accesos,
+    comandos: comandos.length ? comandos : undefined,
+    permisos_pedidos: permisosPedidos.length ? permisosPedidos : undefined,
     sin_git: antes && !antes[0].git ? true : undefined,
     fallos_log: final.fallosLog.length ? final.fallosLog : undefined,
     generados: generados.length ? generados : undefined,

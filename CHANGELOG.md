@@ -1,5 +1,18 @@
 # Historial de versiones
 
+## 0.5.0 — 2026-10-31
+
+agy deja de estar sin terminal cuando su orquestador lo decide. Probado en un banco con agy real hasta cumplir una checklist de calidad en dos iteraciones seguidas.
+
+- **Agy como subagente:** `--modo plan` (pasos y líneas `PERMISO:`, sin tocar nada), `--acceso sandbox`, `--terminal "<comando>"` y `--web <dominio>`. Los permisos van por `--settings`, valen para una sola llamada y nunca tocan `settings.json`.
+- **`pide_permiso`:** si agy necesita algo que no tiene, entrega lo hecho y lo pide. El orquestador decide y continúa la conversación.
+- **Límites fijos:** `permiso_rechazado` sin lanzar nada ante comodines, encadenados, terminales, intérpretes con código en línea, y `git push`, `commit`, `reset`, `gh`, publicar, desplegar, borrar y `curl`.
+- **Reglas del usuario conservadas:** con `permissions`, `--settings` reemplaza las de `settings.json`, y se perdían las MCP y los `deny`. El script las combina.
+- **Entorno sin secretos:** con accesos, agy ya no hereda variables con tokens y claves, ni URL con contraseña, que sus comandos podían ver. Si `settings.json` cambia durante la ejecución, el resumen lo avisa.
+- **Auditoría:** el resumen y `historial.jsonl` dicen qué accesos se dieron y qué comandos pidió agy, según su transcripción. Si pidió salir del sandbox, el detalle lo avisa.
+- **Respuestas más cortas:** en lectura y en plan se pide «sin razonamiento en la respuesta», la causa de tres resultados `parcial` por el límite de salida.
+- **Referencias al día** con agy 1.4.12, incluida una tabla de lo comprobado sobre el sandbox.
+
 ## 0.4.0 — 2026-10-25
 
 Lo aprendido en diez días de uso real en siete proyectos: 10 incidencias y 12 lecciones del registro central, más las notas de cada proyecto.

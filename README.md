@@ -6,10 +6,11 @@ El agente actúa como orquestador:
 
 1. **Decide si conviene delegar.** Sí para leer o resumir muchos archivos, borradores largos, cambios mecánicos en varios archivos, búsquedas amplias o una segunda opinión. No para tareas pequeñas, datos confidenciales ni acciones que requieren tu autorización.
 2. **Elige el modelo por gama y nivel de esfuerzo,** no por nombre, porque Antigravity cambia los modelos sin aviso: la gama rápida (Gemini Flash) para lo mecánico e intermedio, y la gama potente (hoy Gemini 4 Argon, antes Pro) para lo complejo. El script traduce la gama al mejor modelo de la lista vigente de `agy models`, así que una familia o versión nueva entra sola. Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
-3. **Escribe el encargo** en un archivo fuera de tu repositorio, en una carpeta única que crea el script (así dos sesiones en paralelo nunca comparten carpeta), con una plantilla que prohíbe a agy la terminal y la web, porque una sola petición le deja la respuesta vacía.
-4. **Ejecuta agy** con un script que devuelve un resumen de pocas líneas. La respuesta completa queda en un archivo.
-5. **Verifica** con el diff o las pruebas, corrige en la misma conversación si hace falta y te informa en pocas líneas.
-6. **Anota lo aprendido** en un registro central de incidencias, común a todos tus proyectos.
+3. **Escribe el encargo** en un archivo fuera de tu repositorio, en una carpeta única que crea el script (así dos sesiones en paralelo nunca comparten carpeta). Por defecto, la plantilla le prohíbe a agy la terminal y la web, porque una sola petición denegada le deja la respuesta vacía.
+4. **Le da solo los accesos que hacen falta,** en cada llamada: agy trabaja como su subagente, le propone un plan y le pide permiso (ver [Terminal bajo control](#terminal-bajo-control)).
+5. **Ejecuta agy** con un script que devuelve un resumen de pocas líneas. La respuesta completa queda en un archivo.
+6. **Verifica** con el diff o las pruebas, corrige en la misma conversación si hace falta y te informa en pocas líneas.
+7. **Anota lo aprendido** en un registro central de incidencias, común a todos tus proyectos.
 
 ```text
 estado: ok
@@ -19,6 +20,31 @@ archivos tocados: src/almacen.js, src/clientes.js, src/envios.js, src/facturas.j
 respuesta (completa en …/respuesta.md):
 Renombré obtenerDato a leerDato en la definición, la exportación y las llamadas de los 6 archivos.
 ```
+
+## Terminal bajo control
+
+Desde la 0.5.0, tu agente puede dejar que agy corra comandos, por ejemplo sus pruebas, sin tocar tu configuración: los permisos valen para una sola llamada y nunca se guardan.
+
+1. **Plan:** agy propone pasos y escribe qué comandos necesitará.
+2. **Revisión:** tu agente lo revisa y decide los accesos.
+3. **Ejecución:** agy trabaja con esos accesos. Si necesita otro, entrega lo que tiene y lo pide.
+4. **Verificación:** tu agente ve qué comandos corrió, según la transcripción de agy, revisa el diff y corre las pruebas por su cuenta.
+
+| Acceso | Qué permite |
+|---|---|
+| Ninguno (por defecto) | Solo archivos del espacio de trabajo |
+| `--acceso sandbox` | Cualquier comando en el sandbox de Antigravity: lee el proyecto y corre pruebas, pero sin escribir archivos, sin red y sin ver el resto de tu perfil. agy edita con sus herramientas de archivos |
+| `--terminal "npm run build"` | Solo ese comando, sin encadenar otros, y puede salir del sandbox para compilar o instalar. **Fuera del sandbox tiene todo tu acceso de usuario:** tu agente revisa antes lo que va a ejecutar |
+| `--web docs.ejemplo.com` | Solo ese dominio |
+
+**Lo que el script nunca autoriza,** aunque se lo pidan: `git push`, `git commit`, `gh`, publicar, desplegar, borrar, `curl`, terminales dentro de la terminal, intérpretes con código en línea, comodines y comandos encadenados. Además, nunca usa `--dangerously-skip-permissions` y quita los tokens y claves del entorno de agy.
+
+**Límites que debes conocer:**
+
+- El sandbox de Antigravity necesita Windows 11 24H2 o posterior, Linux o macOS. Según su documentación, sin él `--acceso sandbox` no da terminal. Se probó solo en Windows 11 24H2.
+- Lo que protege de verdad es el sandbox: agy puede burlar las reglas de denegación encadenando comandos.
+- El sandbox deja leer la carpeta temporal del sistema y los `.env` del proyecto (ahí protege el bloqueo por secretos del script).
+- Lo que agy lea o la salida de sus comandos sale a los servidores de Google.
 
 ## Requisitos
 
@@ -111,7 +137,7 @@ La lista de `agy models` tarda unos 12 s, así que el script la guarda unas hora
 ## Seguridad y privacidad
 
 - Lo que lee agy se envía a los servidores de Google, y agy puede leer cualquier archivo de su espacio de trabajo aunque el encargo se lo prohíba. La skill no delega datos de pacientes, datos personales, secretos ni credenciales sin tu permiso explícito, y el script se detiene solo si encuentra `.env`, `.dev.vars`, claves o credenciales (también `client_secret*.json`, cuentas de servicio y `.netrc`). Si copias documentos a la carpeta del encargo, el agente te ofrece borrarla al terminar.
-- agy trabaja con la terminal bloqueada (`--sandbox`) y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
+- agy trabaja sin terminal salvo que tu agente le dé acceso para esa llamada, siempre con `--sandbox` y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
 - Cada delegación gasta la cuota de Antigravity, no la de tu agente.
 
 ## Licencia

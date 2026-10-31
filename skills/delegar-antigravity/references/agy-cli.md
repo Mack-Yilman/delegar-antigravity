@@ -1,6 +1,6 @@
 # Referencia de Antigravity CLI (agy) en modo no interactivo
 
-Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 a 15) y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
+Comprobado con agy 1.3.3 (2026-10-11 a 15) y 1.4.12 (2026-10-31) en Windows 11, y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli, /docs/sandbox, /docs/settings?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
 
 ## Flags útiles
 
@@ -11,12 +11,14 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 a 15) y con la documentación
 | `--model <slug>` | Modelo exacto de `agy models`. El script acepta alias de gama (`rapido-medium`, `potente-high`) o de familia (`flash-medium`) y los resuelve con esa lista |
 | `--mode plan` | Según la documentación, solo herramientas de lectura. En modo no interactivo **no impide editar** (comprobado) y a veces prepara un plan en lugar de responder |
 | `--mode accept-edits` | Aprueba crear y editar archivos. Sin `--mode`, agy también edita en modo no interactivo (comprobado) |
-| `--sandbox` | Restringe la terminal al sandbox del sistema |
+| `--sandbox` | Restringe la terminal al sandbox del sistema. Por sí solo no da permiso para ejecutar nada |
+| `--settings <archivo o JSON>` | Ajustes solo para esta sesión, nunca guardados. Está en `agy --help`, no en la documentación. En Windows, usa un archivo: pasar el JSON como argumento rompe los `\\` |
 | `--print-timeout 600s` | Tiempo límite; la ayuda dice 0s (sin límite) y la documentación 5m: pásalo siempre |
 | `--add-dir <carpeta>` | Agrega una carpeta al espacio de trabajo (se puede repetir) |
 | `--conversation <id>` / `-c` | Continúa una conversación por ID, o la última |
 | `--json-schema <archivo>` | Fuerza una salida estructurada en `structured_output` |
-| `--effort low…max` | Esfuerzo de razonamiento. Solo con el nombre base del modelo (`gemini-3.8-flash`); con un nivel en el nombre, agy lo rechaza |
+| `--effort low…max` | Esfuerzo de razonamiento (`low`, `medium`, `high`, `xhigh`, `max`). Solo con el nombre base del modelo (`gemini-3.8-flash`); con un nivel en el nombre, agy lo rechaza. Desde agy 1.4.x, un nombre base sin `--effort` también vale |
+| `--mode auto` | En headless avisa y sigue en `default` (documentación): no sirve para delegar |
 | `--dangerously-skip-permissions` | Aprueba todo, incluida la terminal. No lo uses sin un sí explícito del usuario |
 
 ## Salida JSON
@@ -35,11 +37,33 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 a 15) y con la documentación
 ## Permisos en modo no interactivo
 
 - **Archivos:** dentro del espacio de trabajo (el directorio actual más cada `--add-dir`), agy lee y escribe sin preguntar, **en cualquier modo**. Las ediciones caen en los archivos reales del proyecto. Ningún flag garantiza la solo lectura: el script lo pide en el mensaje y comprueba después qué archivos cambiaron.
-- **Terminal:** se deniega sin preguntar. agy sale con código 0, `status` `SUCCESS`, `response` vacío, `denied_actions` y un aviso en la salida de errores. El script lo clasifica como `incompleto`.
+- **Terminal:** sin regla, se deniega sin preguntar. agy sale con código 0, `status` `SUCCESS`, `response` vacío, `denied_actions` y un aviso en la salida de errores. El script lo clasifica como `incompleto`.
 - **MCP:** sin regla, toda llamada a una herramienta MCP se deniega igual que la terminal (`denied_actions: [{action: "mcp", display_name: "CallMcpTool"}]`). Se permite con `mcp(servidor/herramienta)` en `permissions.allow`.
 - **Web:** abrir una URL (`read_url`) también se deniega y vacía la respuesta (comprobado el 2026-10-13).
 - **Una sola denegación vacía toda la respuesta,** aunque otras llamadas hayan funcionado. Para probar permisos, haz una llamada por encargo.
-- **Reglas:** se pueden permitir comandos en `~/.gemini/antigravity-cli/settings.json`, con `"permissions": {"allow": ["command(git status)"]}`. La prioridad es deny > ask > allow, y en Windows un comando con subcomandos necesita `regex:`. Cambiar esa configuración es decisión del usuario.
+- **Reglas:** `permissions.allow|ask|deny` con `command(prefijo)`, `command(regex:…)`, `read_file(ruta)`, `write_file(ruta)`, `read_url(dominio)`, `execute_url(dominio)` y `mcp(servidor/herramienta)`. La prioridad es deny > ask > allow, y en Windows un comando con subcomandos necesita `regex:`. Cambiar `settings.json` es decisión del usuario; para una sola ejecución, el script usa `--settings`.
+- **`toolPermission: "proceed-in-sandbox"`** (con `--sandbox`): los comandos dentro del sandbox corren sin preguntar, también en headless (comprobado).
+
+### Lo que se comprobó con sondas reales (agy 1.4.12, Windows 11 24H2, 2026-10-31)
+
+| Prueba | Resultado |
+|---|---|
+| `--settings` con `proceed-in-sandbox` o con una regla `allow` | El comando corre y `settings.json` no cambia |
+| `--settings` con `permissions` | **Reemplaza** las reglas de `settings.json`: se pierden las MCP del usuario. Sin esa clave, se conservan. El script copia las reglas del usuario |
+| Sandbox: leer o escribir en el perfil (`~/.…`, el Escritorio) | «Acceso denegado» |
+| Sandbox: escribir **dentro del proyecto**, en la carpeta temporal, el perfil o el Escritorio, incluido `.git` | **Denegado, aunque la documentación diga que el proyecto se monta con escritura.** No lo abren `write_file(...)`, `trustedWorkspaces` ni `allowNonWorkspaceAccess`. No hay commit ni compilación con salidas |
+| Sandbox: leer el proyecto y su `.env` | **Se puede,** aunque la documentación diga que `.env` está bloqueado. Protege el bloqueo `secretos` del script |
+| `--add-dir`: dónde arrancan los comandos | Casi nunca en el proyecto, y ni el orden de las carpetas ni el directorio de lanzamiento lo cambiaron. Con terminal, el mensaje le da el prefijo `Set-Location "<proyecto>"; ` |
+| Con BypassSandbox, un comando con regla `allow` | Sale del sandbox: escribe y **lee el perfil del usuario**. Sin regla, se deniega |
+| Sandbox: red | No resuelve nombres |
+| Sandbox: la carpeta temporal del sistema | **Se puede leer** |
+| Sandbox: variables de entorno | **Las ve todas**, tokens incluidos. El script las limpia si hay terminal |
+| Regla `allow` con regex anclada ante `node --test; echo x` | Denegado |
+| Regla `deny` ante `git push origin main` | Bloqueado, y agy responde que lo está |
+| Regla `deny` ante `git status; git push origin main`, anclada o no | **No lo ve: se ejecutó.** El límite real es el sandbox |
+| Un comando con regla `allow` sin BypassSandbox | Sigue dentro del sandbox: `EPERM` al leer el perfil |
+| Flash antepone `Set-Location "<carpeta>"; ` a un comando | La regla del script lo admite; sin eso, se denegaba |
+| Un comando falla dentro del sandbox | agy lo reintenta con `BypassSandbox: true`, se le deniega y la respuesta queda vacía |
 
 ## Contexto que agy carga por sí solo
 
@@ -71,6 +95,8 @@ Comprobado con agy 1.3.3 en Windows 11 (2026-10-11 a 15) y con la documentación
 | `duration_seconds` del JSON es tiempo activo del modelo, no de reloj | El script mide el reloj aparte |
 
 ## Log y carpeta de cada conversación
+
+- **`brain/<id>/.system_generated/logs/transcript.jsonl`:** un paso por línea, con `created_at` y `tool_calls`. Cada comando es `{"name":"run_command","args":{"CommandLine":"\"node --test\"","BypassSandbox":"false"}}`, también los denegados. De ahí sale `comandos` en el resumen.
 
 - **`~/.gemini/antigravity-cli/log/cli-<AAAAMMDD_HHMMSS>.log`:** uno por ejecución. Trae `Created conversation <id>` y los reintentos internos de agy, que no salen en stderr ni en el JSON:
   - `run.go] Run: attempt 1 failed (<motivo>), retrying in 4s`, donde el motivo es «stream idle timeout (5m0s)», «UNAVAILABLE (code 503)…» o «INTERNAL (code 500)…»;
