@@ -1033,6 +1033,8 @@ test('permisos: la regla de un comando admite argumentos y no deja encadenar nad
   for (const malo of ['npm test; curl x', 'npm test && git push', 'npm test | tee x', 'npm test > x', 'npm test $(curl x)', 'npm test `curl x`', 'npm testing', 'x npm test']) {
     assert.ok(!coincide(regla, malo), malo);
   }
+  // Un salto de línea encadena comandos igual que «;» (hallazgo de la revisión de la 0.5.0).
+  for (const malo of ['npm test\nRemove-Item x', 'npm test\r\ncurl x', 'npm\ntest', 'cd a\ncurl x; npm test', 'cd a;\nnpm test']) assert.ok(!coincide(regla, malo), JSON.stringify(malo));
   // Flash antepone el cambio de carpeta: se admite, pero sin abrir la puerta a encadenar.
   for (const bueno of ['Set-Location "C:\\a b"; npm test', "cd C:/a; npm test --x", 'Set-Location -Path "C:/a"; npm test']) assert.ok(coincide(regla, bueno), bueno);
   for (const malo of ['cd a; curl x; npm test', 'cd a; npm test; curl x', 'cd $(curl x); npm test', 'curl x; npm test']) assert.ok(!coincide(regla, malo), malo);
@@ -1042,9 +1044,9 @@ test('permisos: la regla de un comando admite argumentos y no deja encadenar nad
 });
 
 test('permisos: los límites rechazan lo que Claude no puede autorizar', () => {
-  const rechazados = ['', '*', 'git', 'git push', 'GIT PUSH origin', 'git commit -m x', 'git reset --hard', 'git clean -fd', 'gh pr merge', 'npm', 'npm publish', 'pnpm publish', 'wrangler deploy', 'wrangler secret put X', 'cf workers', 'rm -rf .', 'del x', 'Remove-Item x', 'curl x.com', 'wget x', 'iwr x', 'Invoke-WebRequest x', 'powershell -c dir', 'pwsh', 'cmd /c dir', 'bash -c ls', 'wsl ls', 'node', 'node -e 1', 'python -c 1', 'node a.js; curl x', 'a && b', 'a | b', 'a > b', 'a $b', 'a `b`'];
+  const rechazados = ['', '*', 'git', 'git push', 'GIT PUSH origin', 'git commit -m x', 'git reset --hard', 'git clean -fd', 'gh pr merge', 'npm', 'npm publish', 'pnpm publish', 'wrangler deploy', 'wrangler secret put X', 'cf workers', 'rm -rf .', 'del x', 'Remove-Item x', 'curl x.com', 'wget x', 'iwr x', 'Invoke-WebRequest x', 'powershell -c dir', 'pwsh', 'cmd /c dir', 'bash -c ls', 'wsl ls', 'node', 'node -e 1', 'python -c 1', 'node a.js; curl x', 'a && b', 'a | b', 'a > b', 'a $b', 'a `b`', 'py -3', 'node --no-warnings', 'node --eval=1', 'deno eval x', 'git --no-pager', 'git -C . push', 'curl.exe x', 'C:\\x\\curl.exe x', 'gh.exe pr', 'git.exe push', '/usr/bin/git push', 'powershell.exe -c x'];
   for (const c of rechazados) assert.ok(motivoRechazoComando(c), `debió rechazar: «${c}»`);
-  for (const c of ['node --test', 'node scripts/a.js', 'npm test', 'npm run build', 'git status', 'git log --oneline', 'git diff', 'python tests/a.py', 'ls', 'npx vitest run']) {
+  for (const c of ['node --test', 'node scripts/a.js', 'npm test', 'npm run build', 'git status', 'git log --oneline', 'git diff', 'python tests/a.py', 'ls', 'npx vitest run', 'python -m pytest', 'node.exe scripts/a.js']) {
     assert.equal(motivoRechazoComando(c), null, c);
   }
 });
@@ -1108,6 +1110,25 @@ test('agy: un acceso de una llamada no sigue vigente en la siguiente', () => {
   assert.ok(!existsSync(join(p.carpeta, 'agy-permisos.json')));
 });
 
+test('agy: al continuar sin los accesos de antes, se le avisa a agy que ya no los tiene', () => {
+  const p = preparar();
+  correr(p, 'exito', ['--modelo', 'gemini-3.8-flash-medium', '--acceso', 'sandbox']);
+  const siguiente = correr(p, 'exito', ['--modelo', 'gemini-3.8-flash-medium', '--conversacion', 'abc']).llamadas.at(-1);
+  assert.match(arg(siguiente.args, '-p'), /ya no tienes acceso a la terminal/);
+  const otra = correr(preparar(), 'exito', ['--modelo', 'gemini-3.8-flash-medium', '--conversacion', 'abc']);
+  assert.doesNotMatch(arg(otra.llamadas.at(-1).args, '-p'), /ya no tienes acceso/);
+});
+
+test('agy: si settings.json cambia durante una ejecución con accesos, el resumen lo avisa', () => {
+  const p = preparar();
+  mkdirSync(p.agyHome, { recursive: true });
+  writeFileSync(join(p.agyHome, 'settings.json'), '{}');
+  const limpio = correr(p, 'exito', ['--modelo', 'gemini-3.8-flash-medium', '--acceso', 'sandbox']);
+  assert.ok(!(limpio.resumen.avisos ?? []).some((a) => /settings\.json/.test(a)));
+  const { resumen } = correr(p, 'toca_ajustes', ['--modelo', 'gemini-3.8-flash-medium', '--terminal', 'node a.js']);
+  assert.ok(resumen.avisos.some((a) => /settings\.json de agy cambió/.test(a)), JSON.stringify(resumen.avisos));
+});
+
 test('agy: un acceso rechazado no lanza nada, ni en un lote', () => {
   const p = preparar();
   for (const flags of [['--terminal', 'git push'], ['--terminal', 'npm test; curl x'], ['--acceso', 'total'], ['--web', '*'], ['--web', 'https://x.com/ruta']]) {
@@ -1125,10 +1146,10 @@ test('agy: un acceso rechazado no lanza nada, ni en un lote', () => {
 
 test('agy: con terminal, los comandos no heredan tokens; agy conserva sus propias credenciales', () => {
   const p = preparar();
-  const entorno = { GH_TOKEN: 'x', MI_SECRET: 'x', CLAUDE_CODE_MESSAGING_TOKEN: 'x', ANTHROPIC_API_KEY: 'x', GEMINI_API_KEY: 'x', OTRA: 'x' };
+  const entorno = { GH_TOKEN: 'x', MI_SECRET: 'x', CLAUDE_CODE_MESSAGING_TOKEN: 'x', ANTHROPIC_API_KEY: 'x', OPENAI_KEY: 'x', GH_PAT: 'x', DB: 'postgres://u:clave@h/d', GEMINI_API_KEY: 'x', OTRA: 'x', WEB: 'https://ejemplo.com/a' };
   const conTerminal = correr(p, 'exito', ['--modelo', 'gemini-3.8-flash-medium', '--acceso', 'sandbox'], entorno).llamadas.at(-1).entorno;
-  for (const v of ['GH_TOKEN', 'MI_SECRET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'ANTHROPIC_API_KEY']) assert.ok(!conTerminal.includes(v), v);
-  for (const v of ['GEMINI_API_KEY', 'OTRA']) assert.ok(conTerminal.includes(v), v);
+  for (const v of ['GH_TOKEN', 'MI_SECRET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_KEY', 'GH_PAT', 'DB']) assert.ok(!conTerminal.includes(v), v);
+  for (const v of ['GEMINI_API_KEY', 'OTRA', 'WEB']) assert.ok(conTerminal.includes(v), v);
   const sinTerminal = correr(p, 'exito', ['--modelo', 'gemini-3.8-flash-medium'], entorno).llamadas.at(-1).entorno;
   assert.ok(sinTerminal.includes('GH_TOKEN'), 'sin terminal, el entorno no cambia');
 });
@@ -1198,5 +1219,7 @@ test('modo lectura y plan piden la respuesta sin razonamiento visible; edición 
 
 test('extraerPermisos entiende listas, negrita y comillas, y no toma otras líneas', () => {
   assert.deepEqual(extraerPermisos('Hice esto.\n* PERMISO: npm i — x\n> **PERMISO**: a b\nEl PERMISO: no cuenta aquí\n'), ['npm i — x', 'a b']);
+  assert.deepEqual(extraerPermisos('«PERMISO: pytest — correr»\n"PERMISO: a b"\n'), ['pytest — correr', 'a b']);
+  assert.deepEqual(extraerPermisos('- Permiso: solo lectura\n'), [], 'en minúsculas es texto normal');
   assert.deepEqual(extraerPermisos('sin pedidos'), []);
 });

@@ -8,7 +8,7 @@ agy deja de estar sin terminal cuando su orquestador lo decide. Probado en un ba
 - **`pide_permiso`:** si agy necesita algo que no tiene, entrega lo hecho y lo pide. El orquestador decide y continúa la conversación.
 - **Límites fijos:** `permiso_rechazado` sin lanzar nada ante comodines, encadenados, terminales, intérpretes con código en línea, y `git push`, `commit`, `reset`, `gh`, publicar, desplegar, borrar y `curl`.
 - **Reglas del usuario conservadas:** con `permissions`, `--settings` reemplaza las de `settings.json`, y se perdían las MCP y los `deny`. El script las combina.
-- **Entorno sin secretos:** con terminal, agy ya no hereda variables con tokens y claves, que sus comandos podían ver.
+- **Entorno sin secretos:** con accesos, agy ya no hereda variables con tokens y claves, ni URL con contraseña, que sus comandos podían ver. Si `settings.json` cambia durante la ejecución, el resumen lo avisa.
 - **Auditoría:** el resumen y `historial.jsonl` dicen qué accesos se dieron y qué comandos pidió agy, según su transcripción. Si pidió salir del sandbox, el detalle lo avisa.
 - **Respuestas más cortas:** en lectura y en plan se pide «sin razonamiento en la respuesta», la causa de tres resultados `parcial` por el límite de salida.
 - **Referencias al día** con agy 1.4.12, incluida una tabla de lo comprobado sobre el sandbox.
