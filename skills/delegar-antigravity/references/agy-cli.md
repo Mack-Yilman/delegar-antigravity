@@ -13,7 +13,7 @@ Comprobado con agy 1.3.3 (2026-10-11 a 15) y 1.4.12 (2026-10-31) en Windows 11, 
 | `--mode accept-edits` | Aprueba crear y editar archivos. Sin `--mode`, agy también edita en modo no interactivo (comprobado) |
 | `--sandbox` | Restringe la terminal al sandbox del sistema. Por sí solo no da permiso para ejecutar nada |
 | `--settings <archivo o JSON>` | Ajustes solo para esta sesión, nunca guardados. Está en `agy --help`, no en la documentación. En Windows, usa un archivo: pasar el JSON como argumento rompe los `\\` |
-| `--print-timeout 600s` | Tiempo límite; la ayuda dice 0s (sin límite) y la documentación 5m: pásalo siempre |
+| `--print-timeout 7200s` | Tiempo límite; `0s` espera hasta que termine el turno. La ayuda dice que 0s es el valor por defecto y la documentación, 5m: pásalo siempre |
 | `--add-dir <carpeta>` | Agrega una carpeta al espacio de trabajo (se puede repetir) |
 | `--conversation <id>` / `-c` | Continúa una conversación por ID, o la última |
 | `--json-schema <archivo>` | Fuerza una salida estructurada en `structured_output` |
@@ -88,7 +88,9 @@ Comprobado con agy 1.3.3 (2026-10-11 a 15) y 1.4.12 (2026-10-31) en Windows 11, 
 | Sin sesión iniciada, agy falla con «authentication required» | El usuario abre `agy` una vez de forma interactiva |
 | agy lee secretos del espacio de trabajo (`.dev.vars`, `.env`) aunque el encargo lo prohíba (comprobado) | El script se detiene con `secretos`; delega desde una carpeta sin ellos o con el permiso del usuario |
 | Los modelos cambian sin aviso: un nombre que ayer funcionaba da «invalid model selection» | El script resuelve alias con `agy models` y, con `--respaldo`, salta al siguiente |
-| En una revisión grande, agy gasta todo `--print-timeout` razonando y responde vacío | Pide un máximo de hallazgos; rescata la conversación con «entrega ya lo que tengas» |
+| En una revisión grande, agy gasta todo `--print-timeout` razonando y responde vacío | No le pongas un `--timeout` corto; pide un máximo de hallazgos. Si ya pasó, rescata la conversación con «entrega ya lo que tengas» |
+| Una llamada en curso no recibe mensajes: stdin va cerrado, y `--input-format stream-json` solo encola turnos | No se le puede preguntar cómo va. `brain/<id>/.system_generated/logs/transcript.jsonl` crece paso a paso (comprobado con agy 1.4.12) y su primer paso trae el mensaje; el script lo vigila. Dentro de una llamada larga no crece |
+| `cli-*.log` escribe `FetchConfig failed` cada minuto, aunque el modelo no haga nada | El log no sirve como señal de avance: usa la transcripción |
 | Con `--mode accept-edits`, una vez agy quedó `incompleto` por `read_file` denegado, sin decir qué archivo; en modo lectura, la misma carpeta funcionó (causa sin confirmar) | Da rutas dentro de `--cwd`; si se repite, haz tú la edición |
 | En modo edición, «guárdalo en esta carpeta» hizo que agy escribiera junto al encargo y no en `--cwd` (2026-10-15) | Nombra la carpeta de destino con su ruta absoluta |
 | agy genera imágenes con un subagente (`generate_image`, que acepta fotos de entrada), pero las guarda en `brain/<conversación>/` como JPG y luego responde que no tiene esa herramienta (2026-10-20) | El script las lista en `generados`; cópialas tú. Con fotos de personas reales altera el rostro aunque el prompt lo prohíba |

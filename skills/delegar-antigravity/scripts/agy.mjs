@@ -3,9 +3,10 @@
 // Node >= 22, sin dependencias. Uso:
 //   node agy.mjs --encargo <archivo.md> [--modelo <alias|slug>] [--modo lectura|plan|edicion] [--cwd <proyecto>]
 //                [--acceso sandbox] [--terminal "<comando>"]... [--web <dominio>]...
-//                [--esfuerzo low|medium|high] [--timeout <s>] [--conversacion <id>] [--esquema <archivo.json>]
-//                [--add-dir <carpeta>]... [--respaldo] [--permitir-secretos] [--refrescar-modelos]
-//                [--max-respuesta <n>] [--formato texto|json] [--seco]
+//                [--esfuerzo low|medium|high] [--timeout <s>] [--sin-avance <s>] [--conversacion <id>]
+//                [--esquema <archivo.json>] [--add-dir <carpeta>]... [--respaldo] [--permitir-secretos]
+//                [--refrescar-modelos] [--max-respuesta <n>] [--formato texto|json] [--seco]
+//   node agy.mjs --estado <carpeta del encargo>   (cómo va una ejecución, sin gastar tokens)
 //   node agy.mjs --carpeta <tema>   (crea una carpeta de encargo nueva y única, e imprime su ruta)
 //   node agy.mjs --lote <carpeta> [--paralelo <n≤5>] [--cwd <común>] [los mismos flags, salvo --encargo]
 //   node agy.mjs --modelos [--refrescar-modelos] [--formato texto|json]
@@ -14,7 +15,7 @@
 // Modelos: alias de gama (rapido-low… potente-high), de familia (flash-medium, argon-high) o nombre exacto.
 // Registro central: ~/.delegar-antigravity/incidencias.jsonl (o DELEGAR_AGY_INCIDENCIAS). Datos de agy (log/ y
 // brain/): ~/.gemini/antigravity-cli (o DELEGAR_AGY_HOME). Espera antes de reintentar un fallo transitorio:
-// DELEGAR_AGY_ESPERA segundos (60).
+// DELEGAR_AGY_ESPERA segundos (60). Cada cuánto mira el avance: DELEGAR_AGY_SONDEO milisegundos (30000).
 // Códigos de salida: 0 ok; 2 incompleto, parcial, edito_en_lectura, pide_permiso o un lote con fallos; 3 cuota
 // agotada; 4 secretos en el espacio de trabajo; 5 permiso_rechazado; 1 otro error.
 import { spawn, spawnSync } from 'node:child_process';
@@ -336,12 +337,14 @@ export function extraerPermisos(texto) {
   return [...new Set(pedidos)];
 }
 
+const rutaTranscripcion = (conversacion) => join(carpetaAgy(), 'brain', conversacion, '.system_generated', 'logs', 'transcript.jsonl');
+
 // Lo que agy pidió ejecutar, según su transcripción: el resumen no se fía de lo que dice su respuesta.
 export function comandosDeAgy(conversacion, desde) {
   if (!conversacion) return [];
   let texto;
   try {
-    texto = readFileSync(join(carpetaAgy(), 'brain', conversacion, '.system_generated', 'logs', 'transcript.jsonl'), 'utf8');
+    texto = readFileSync(rutaTranscripcion(conversacion), 'utf8');
   } catch {
     return [];
   }
@@ -366,6 +369,172 @@ export function comandosDeAgy(conversacion, desde) {
   return comandos.slice(-20);
 }
 
+// --- Vigilancia ---
+// Un límite fijo cortó trabajo sano (Piper, 2026-10-31): Flash daba un paso cada 4 s y Argon salía de una llamada de
+// 11,5 min. Lo que indica un problema es que no avance, no cuánto lleva. agy escribe transcript.jsonl en vivo, paso
+// a paso (sonda real, agy 1.4.12): leerlo no gasta tokens ni lo interrumpe. Al modelo no se le puede preguntar:
+// una llamada sin terminal no recibe mensajes mientras corre, y mientras razona no puede escribir.
+
+// Plazos sin ningún paso nuevo, en segundos. Mayor silencio sano medido: 11,5 min (Argon); Flash High razonó 15 min.
+const PLAZOS = { 'rapido-low': 900, 'rapido-medium': 1200, 'rapido-high': 1800 };
+const PLAZO_POTENTE = 2700;
+const PLAZO_DESCONOCIDO = 1800;
+const TOPES = { rapido: 7200, potente: 14400 };
+const SILENCIOS_DE_MARGEN = 3;
+
+const nivelGama = (slug) => {
+  const p = parsearModelo(slug);
+  return p && { gama: gama(p.familia), nivel: p.nivel };
+};
+
+export function plazoInicial(slug, esfuerzo) {
+  const p = nivelGama(slug);
+  if (!p) return PLAZO_DESCONOCIDO;
+  return p.gama === 'potente' ? PLAZO_POTENTE : PLAZOS[`rapido-${esfuerzo ?? p.nivel}`] ?? PLAZO_DESCONOCIDO;
+}
+
+// Una tarea con pausas largas (archivos grandes) gana margen sola; una de pasos rápidos conserva el inicial.
+export const plazoDinamico = (inicial, silencioMaximo) => Math.max(inicial, SILENCIOS_DE_MARGEN * silencioMaximo);
+
+// Solo contra un modelo en bucle que gaste cuota: mientras no llegue aquí, una tarea que avanza no se corta.
+export const topeDeTiempo = (slug) => TOPES[nivelGama(slug)?.gama ?? 'rapido'];
+
+// agy solo da el id al final. Su primer paso trae el mensaje, que nombra el encargo: la carpeta es única, así que
+// sirve también con encargos en paralelo.
+export function buscarConversacion(encargo, desde) {
+  const base = join(carpetaAgy(), 'brain');
+  const buscada = encargo.replace(/\\/g, '/').toLowerCase();
+  let nombres;
+  try {
+    nombres = readdirSync(base);
+  } catch {
+    return undefined;
+  }
+  for (const nombre of nombres) {
+    try {
+      const s = statSync(join(base, nombre));
+      // Por creación: la conversación del intento anterior de --respaldo se modificó hasta justo antes.
+      if ((s.birthtimeMs || s.mtimeMs) < desde - 2000) continue;
+      const primera = readFileSync(rutaTranscripcion(nombre), 'utf8').split('\n', 1)[0];
+      if (primera.replace(/\\+/g, '/').toLowerCase().includes(buscada)) return nombre;
+    } catch {}
+  }
+  return undefined;
+}
+
+// Pasos y última herramienta: solo metadatos, nunca el contenido de los pasos, que puede tener datos del usuario.
+function medirTranscripcion(conversacion, desde) {
+  let pasos = 0;
+  let herramienta;
+  for (const linea of readFileSync(rutaTranscripcion(conversacion), 'utf8').split('\n')) {
+    try {
+      const paso = JSON.parse(linea);
+      if (Date.parse(paso.created_at) < desde - 2000) continue;
+      pasos++;
+      herramienta = paso.tool_calls?.at(-1)?.name ?? herramienta;
+    } catch {}
+  }
+  return { pasos, herramienta };
+}
+
+const tamano = (archivo) => {
+  try {
+    return statSync(archivo).size;
+  } catch {
+    return 0;
+  }
+};
+
+// Devuelve sondear(): true si se venció el plazo sin avance. plazoFijo 0 desactiva el corte, no la observación.
+export function crearVigilante({ encargo, conversacion, modelo, esfuerzo, plazoFijo, tope, carpeta, inicioTotal, ahora = Date.now }) {
+  const desde = ahora();
+  const inicial = plazoFijo ?? plazoInicial(modelo, esfuerzo);
+  let id = conversacion;
+  // Al continuar una conversación, lo que ya tenía no es avance de esta llamada.
+  let tam = id ? tamano(rutaTranscripcion(id)) : 0;
+  let ultimo = desde;
+  let silencioMaximo = 0;
+  let medida = { pasos: 0 };
+  const plazo = () => (plazoFijo === undefined ? plazoDinamico(inicial, silencioMaximo) : plazoFijo);
+  const archivo = join(carpeta, 'progreso.json');
+  const escribir = (extra) => {
+    // Es informativo: un fallo al escribirlo no debe tumbar una tarea larga.
+    try {
+      writeFileSync(
+        archivo,
+        JSON.stringify({
+          estado: 'trabajando',
+          pid: process.pid,
+          modelo,
+          conversacion: id,
+          inicio: inicioTotal,
+          actualizado: ahora(),
+          ultimo_avance: ultimo,
+          pasos: medida.pasos,
+          ultima_herramienta: medida.herramienta,
+          silencio_maximo_s: Math.round(silencioMaximo),
+          plazo_s: plazo(),
+          tope_s: tope,
+          ...extra,
+        }),
+      );
+    } catch {}
+  };
+  escribir();
+  return {
+    conversacion: () => id,
+    escribir,
+    sondear() {
+      id ??= buscarConversacion(encargo, desde);
+      const reloj = ahora();
+      if (id) {
+        const actual = tamano(rutaTranscripcion(id));
+        if (actual !== tam) {
+          tam = actual;
+          silencioMaximo = Math.max(silencioMaximo, (reloj - ultimo) / 1000);
+          ultimo = reloj;
+          try {
+            medida = medirTranscripcion(id, desde);
+          } catch {}
+        }
+      }
+      escribir();
+      return plazo() > 0 && (reloj - ultimo) / 1000 > plazo();
+    },
+  };
+}
+
+// Lo que imprime --estado. «Cuánto falta» no se puede saber: dice qué lleva hecho y hace cuánto fue su último paso.
+export function leerEstado(carpeta, ahora = Date.now()) {
+  let p;
+  try {
+    p = JSON.parse(readFileSync(join(carpeta, 'progreso.json'), 'utf8'));
+  } catch {
+    return { estado: 'sin_progreso', detalle: `no hay progreso.json legible en ${carpeta}: aún no empieza, o reintenta en unos segundos.` };
+  }
+  const min = (ms) => Math.round(ms / 60000);
+  const lineas = [`lleva: ${min((p.fin ?? ahora) - p.inicio)} min`, `pasos: ${p.pasos}${p.ultima_herramienta ? ` (última herramienta: ${p.ultima_herramienta})` : ''}`];
+  const resumen = { estado: p.estado, modelo: p.modelo, conversacion: p.conversacion, pasos: p.pasos, tabla: lineas };
+  if (p.estado !== 'trabajando') return resumen;
+  let vivo = true;
+  try {
+    process.kill(p.pid, 0);
+  } catch (e) {
+    vivo = e.code === 'EPERM';
+  }
+  if (!vivo) {
+    resumen.estado = 'interrumpido';
+    resumen.detalle = 'el script ya no corre y no dejó un estado final (se cerró su terminal o su sesión). Repite el encargo; si hay conversación, continúa con --conversacion.';
+    return resumen;
+  }
+  const silencio = ahora - p.ultimo_avance;
+  lineas.push(`último paso: hace ${min(silencio)} min`, `plazo sin avance: ${p.plazo_s ? `${min(p.plazo_s * 1000)} min` : 'sin plazo'}`, `tope: ${p.tope_s ? `${min(p.tope_s * 1000)} min` : 'sin tope'}`);
+  if (silencio > 300000) {
+    resumen.detalle = `sin avance desde hace ${min(silencio)} min. Una llamada larga de razonamiento es normal: no hagas nada, el script la corta si pasa del plazo.`;
+  }
+  return resumen;
+}
+
 const PIDE_PERMISO =
   ' Si necesitas un comando o un acceso que no tienes, no lo intentes: una sola petición denegada vacía tu respuesta y pierdes todo el trabajo. Termina lo que puedas, entrégalo y agrega una línea por pedido: «PERMISO: <comando exacto> — <por qué>». Tu orquestador decide y te responde.';
 const CON_TERMINAL =
@@ -380,7 +549,7 @@ const POR_NOMBRE = (comandos) =>
 const SIN_ACCESO_AHORA = ' En esta llamada ya no tienes acceso a la terminal: no ejecutes comandos.';
 const SIN_RAZONAMIENTO = ' Tu respuesta final es solo el entregable: sin razonamiento, borradores ni notas de lo que vas pensando.';
 
-export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600, esfuerzo, conversacion, esquema, addDirs = [], cwd, ajustes, conTerminal = false, terminal = [], accesoRetirado = false }) {
+export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, esfuerzo, conversacion, esquema, addDirs = [], cwd, ajustes, conTerminal = false, terminal = [], accesoRetirado = false }) {
   // --mode plan no impide escribir en modo no interactivo, y a veces prepara un plan en lugar de responder:
   // el mensaje lo deja explícito y el script detecta después cualquier archivo tocado.
   const POR_MODO = {
@@ -413,12 +582,18 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 600
   return args;
 }
 
-export function clasificar({ json, stderr = '', codigo, vencido = false, fallo, sinCerrar, fallosLog = [] }) {
+export function clasificar({ json, stderr = '', codigo, vencido = false, sinAvance = false, fallo, sinCerrar, fallosLog = [] }) {
+  const cierre = sinCerrar
+    ? `no respondió al cierre: el proceso ${sinCerrar} puede seguir vivo, ciérralo a mano`
+    : 'se cerró su árbol de procesos';
+  if (sinAvance) {
+    if (fallosLog.some((f) => MUDO.test(f))) {
+      return { estado: 'modelo_mudo', detalle: `el modelo no dio ningún paso en todo el plazo y agy registró «stream idle timeout»; ${cierre}. El rescate no sirve en este fallo: cambia de modelo (con --respaldo el script ya lo hace) o acota el encargo.` };
+    }
+    return { estado: 'sin_avance', detalle: `agy no dio ningún paso en todo el plazo; ${cierre}. Rescate: escribe correccion.md pidiendo que entregue ya lo que tenga, sin leer más, y continúa con --conversacion <id>. Sin id, aún no había empezado: repite el encargo.` };
+  }
   if (vencido) {
-    const cierre = sinCerrar
-      ? `no respondió al cierre: el proceso ${sinCerrar} puede seguir vivo, ciérralo a mano`
-      : 'se cerró su árbol de procesos';
-    return { estado: 'timeout', detalle: `agy no terminó dentro del tiempo límite; ${cierre}. Divide la tarea o sube --timeout.` };
+    return { estado: 'timeout', detalle: `agy llegó al tope de tiempo; ${cierre}. Mira los pasos en progreso.json: si avanzaba, continúa con --conversacion y un --timeout mayor; si repetía lo mismo, divide la tarea.` };
   }
   if (fallo) return { estado: 'error', detalle: fallo };
   // Con un error o un corte, agy a veces deja la respuesta completa o casi (20/10 y 22/10).
@@ -550,24 +725,28 @@ function matarArbol(pid) {
 // un nieto de agy que sobreviva podría retenerla y bloquear al orquestador.
 // Si el proceso no muere tras matarlo (pasó una vez que el tiempo límite no cortó una tarea de 20 min),
 // se vuelve igual a los `esperaTrasMatar` ms: el orquestador nunca espera para siempre.
-export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = matarArbol, esperaTrasMatar = 15000, env = process.env }) {
+// limiteMs 0 no pone tope. `vigilar`, si se da, corre cada `sondeoMs` y corta al devolver true.
+export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = matarArbol, esperaTrasMatar = 15000, env = process.env, vigilar, sondeoMs = 30000 }) {
   return new Promise((listo) => {
     const out = openSync(salida, 'w');
     const err = openSync(errores, 'w');
     const [comando, previos] = /\.m?js$/i.test(bin) ? [process.execPath, [bin]] : [bin, []];
     let vencido = false;
+    let sinAvance = false;
     let cerrado = false;
     let temporizador;
     let ultimatum;
+    let sondeo;
     // Node puede emitir «error» y luego «exit»: cerrar dos veces los descriptores lanzaría EBADF.
     const cerrar = (resultado) => {
       if (cerrado) return;
       cerrado = true;
       clearTimeout(temporizador);
       clearTimeout(ultimatum);
+      clearInterval(sondeo);
       closeSync(out);
       closeSync(err);
-      listo({ vencido, ...resultado });
+      listo({ vencido, sinAvance, ...resultado });
     };
     const hijo = spawn(comando, [...previos, ...args], {
       cwd,
@@ -576,11 +755,25 @@ export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = ma
       windowsHide: true,
       detached: process.platform !== 'win32',
     });
-    temporizador = setTimeout(() => {
-      vencido = true;
+    const cortar = () => {
+      clearTimeout(temporizador);
+      clearInterval(sondeo);
       matar(hijo.pid);
       ultimatum = setTimeout(() => cerrar({ sinCerrar: hijo.pid }), esperaTrasMatar);
-    }, limiteMs);
+    };
+    if (limiteMs) {
+      temporizador = setTimeout(() => {
+        vencido = true;
+        cortar();
+      }, limiteMs);
+    }
+    if (vigilar) {
+      sondeo = setInterval(() => {
+        if (!vigilar()) return;
+        sinAvance = true;
+        cortar();
+      }, sondeoMs);
+    }
     hijo.on('error', (e) => cerrar({ fallo: e.message }));
     hijo.on('exit', (codigo) => cerrar({ codigo }));
   });
@@ -591,7 +784,7 @@ export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = ma
 const IGNORADAS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next']);
 const TOPE_ARCHIVOS = 20000;
 // Lo que el script escribe junto al encargo: no son cambios de agy.
-const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'respuesta.json', 'historial.jsonl', 'resumen.json', 'lote-errores.txt', 'agy-permisos.json'];
+const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'respuesta.json', 'historial.jsonl', 'resumen.json', 'lote-errores.txt', 'agy-permisos.json', 'progreso.json'];
 // Lo que escribe el orquestador para agy. Editarlo mientras agy trabaja (p. ej., reforzar el encargo de varias
 // tareas en paralelo) daba un falso edito_en_lectura.
 const ENTRADAS = ['encargo.md', 'correccion.md'];
@@ -828,9 +1021,9 @@ function imprimir(resumen, formato) {
 
 const duracion = (s) => (s < 120 ? `${s} s` : `${Math.round(s / 60)} min`);
 
-function entero(nombre, valor) {
+function entero(nombre, valor, minimo = 1) {
   const n = Number(valor);
-  if (!Number.isInteger(n) || n <= 0) throw new Error(`--${nombre} debe ser un entero positivo, no «${valor}»`);
+  if (!Number.isInteger(n) || n < minimo) throw new Error(`--${nombre} debe ser un entero ${minimo ? 'positivo' : 'de 0 en adelante'}, no «${valor}»`);
   return n;
 }
 
@@ -849,7 +1042,7 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 
 function archivoIncidencias() {
   return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
@@ -983,7 +1176,9 @@ async function correrLote(o, cwdComun) {
     throw new Error(`no existe --lote: ${raiz}`);
   }
   if (!carpetas.length) throw new Error(`--lote: ninguna subcarpeta de ${raiz} tiene encargo.md`);
-  const comunes = ['--modelo', o.modelo, '--modo', o.modo, '--timeout', o.timeout, '--margen', o.margen, '--max-respuesta', o['max-respuesta'], '--formato', 'json'];
+  const comunes = ['--modelo', o.modelo, '--modo', o.modo, '--margen', o.margen, '--max-respuesta', o['max-respuesta'], '--formato', 'json'];
+  if (o.timeout !== undefined) comunes.push('--timeout', o.timeout);
+  if (o['sin-avance'] !== undefined) comunes.push('--sin-avance', o['sin-avance']);
   if (o.esfuerzo) comunes.push('--esfuerzo', o.esfuerzo);
   for (const flag of ['respaldo', 'permitir-secretos', 'seco']) if (o[flag]) comunes.push(`--${flag}`);
   if (o.acceso) comunes.push('--acceso', o.acceso);
@@ -1064,7 +1259,9 @@ async function principal() {
       carpeta: { type: 'string' },
       paralelo: { type: 'string', default: '5' },
       esfuerzo: { type: 'string' },
-      timeout: { type: 'string', default: '600' },
+      timeout: { type: 'string' },
+      'sin-avance': { type: 'string' },
+      estado: { type: 'string' },
       margen: { type: 'string', default: '30' },
       conversacion: { type: 'string' },
       esquema: { type: 'string' },
@@ -1099,6 +1296,11 @@ async function principal() {
     else process.stdout.write(resumirIncidencias(entradas, archivoIncidencias()) + '\n');
     return 0;
   }
+  if (o.estado !== undefined) {
+    const resumen = leerEstado(o.estado);
+    imprimir(resumen, o.formato);
+    return resumen.estado === 'sin_progreso' ? 1 : 0;
+  }
   if (o.carpeta !== undefined) {
     const ruta = carpetaNueva(o.carpeta);
     if (o.formato === 'json') imprimir({ estado: 'carpeta', carpeta: ruta }, 'json');
@@ -1121,13 +1323,15 @@ async function principal() {
     return CODIGOS.permiso_rechazado;
   }
   if (o.lote !== undefined) return correrLote(o, cwdComun);
-  let encargo, cwd, timeout, margen, maxRespuesta;
+  let encargo, cwd, timeoutPedido, plazoFijo, margen, maxRespuesta;
   if (!o.modelos) {
     if (!o.encargo) throw new Error('falta --encargo <archivo>');
     if (!existsSync(o.encargo)) throw new Error(`no existe el encargo: ${resolve(o.encargo)}`);
     if (!MODOS[o.modo]) throw new Error(`--modo debe ser lectura, plan o edicion, no «${o.modo}»`);
     if (!existsSync(o.cwd)) throw new Error(`no existe --cwd: ${resolve(o.cwd)}`);
-    timeout = entero('timeout', o.timeout);
+    // Sin flag, los dos dependen del modelo de cada intento. 0 quita el tope o el plazo.
+    if (o.timeout !== undefined) timeoutPedido = entero('timeout', o.timeout, 0);
+    if (o['sin-avance'] !== undefined) plazoFijo = entero('sin-avance', o['sin-avance'], 0);
     margen = entero('margen', o.margen);
     maxRespuesta = entero('max-respuesta', o['max-respuesta']);
     encargo = rutaReal(o.encargo);
@@ -1167,7 +1371,6 @@ async function principal() {
     accesoRetirado,
     encargo,
     modo: o.modo,
-    timeout,
     esfuerzo: o.esfuerzo,
     conversacion: o.conversacion,
     esquema: o.esquema && resolve(o.esquema),
@@ -1217,7 +1420,7 @@ async function principal() {
   const extra = { pedido: o.modelo !== pedido.slug ? o.modelo : undefined, nota: pedido.nota };
 
   if (o.seco) {
-    const args = construirArgs({ ...opciones, modelo: pedido.slug });
+    const args = construirArgs({ ...opciones, modelo: pedido.slug, timeout: timeoutPedido ?? topeDeTiempo(pedido.slug) });
     const avisosSeco = [lista.aviso, avisoBusqueda].filter(Boolean);
     imprimir(
       {
@@ -1252,6 +1455,7 @@ async function principal() {
   const inicioTotal = Date.now();
   const espera = Number(process.env.DELEGAR_AGY_ESPERA ?? 60) * 1000;
   let final;
+  let vigilante;
   while (pendientes.length) {
     const modelo = pendientes.shift();
     probados.add(modelo);
@@ -1262,17 +1466,25 @@ async function principal() {
     const salida = join(carpeta, 'agy-salida.json');
     const errores = join(carpeta, 'agy-errores.txt');
     const inicio = Date.now();
-    const r = await ejecutar(bin, construirArgs({ ...opciones, modelo }), {
+    const timeout = timeoutPedido ?? topeDeTiempo(modelo);
+    vigilante = crearVigilante({ encargo, conversacion: opciones.conversacion, modelo, esfuerzo: o.esfuerzo, plazoFijo, tope: timeout, carpeta, inicioTotal });
+    const r = await ejecutar(bin, construirArgs({ ...opciones, modelo, timeout }), {
       cwd,
       salida,
       errores,
-      limiteMs: (timeout + margen) * 1000,
+      // agy corta primero con --print-timeout y devuelve lo que tenga; el margen es por si no lo hace.
+      limiteMs: timeout ? (timeout + margen) * 1000 : 0,
       env: ajustes ? entornoSinSecretos(process.env) : process.env,
+      vigilar: vigilante.sondear,
+      sondeoMs: Number(process.env.DELEGAR_AGY_SONDEO ?? 30000),
     });
     const json = leerJson(salida);
     const stderr = readFileSync(errores, 'utf8');
-    const fallosLog = leerLogAgy({ desde: inicio, conversacion: json?.conversation_id || opciones.conversacion });
-    final = { modelo, json, inicio, fin: Date.now(), fallosLog, ...clasificar({ json, stderr, fallosLog, ...r }) };
+    // Si se cortó el proceso no hay JSON: el id sale de lo que encontró el vigilante, para poder rescatarlo.
+    vigilante.sondear();
+    const idIntento = json?.conversation_id || vigilante.conversacion();
+    const fallosLog = leerLogAgy({ desde: inicio, conversacion: idIntento });
+    final = { modelo, json, inicio, fin: Date.now(), fallosLog, idIntento, ...clasificar({ json, stderr, fallosLog, ...r }) };
     intentos.push({ modelo, estado: final.estado });
     registros.push({
       fecha: fechaLocal(inicio),
@@ -1281,7 +1493,7 @@ async function principal() {
       segundos: Math.round((final.fin - inicio) / 1000),
       segundos_agy: json?.duration_seconds !== undefined ? Math.round(json.duration_seconds) : undefined,
       tokens: json?.usage?.total_tokens,
-      conversacion: json?.conversation_id || undefined,
+      conversacion: final.idIntento || undefined,
       denegado: final.denegado?.length ? final.denegado : undefined,
       fallos_log: fallosLog.length ? fallosLog : undefined,
       stderr: stderr.trim().slice(0, 500) || undefined,
@@ -1329,7 +1541,7 @@ async function principal() {
   if (o.modo !== 'edicion' && archivos?.length) {
     marcar('edito_en_lectura', 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.');
   }
-  const idConversacion = json?.conversation_id || opciones.conversacion;
+  const idConversacion = final.idIntento || opciones.conversacion;
   const comandos = comandosDeAgy(idConversacion, final.inicio);
   registros.at(-1).comandos = comandos.length ? comandos : undefined;
   registros.at(-1).accesos = accesos;
@@ -1383,7 +1595,7 @@ async function principal() {
     segundos: Math.round((final.fin - inicioTotal) / 1000),
     segundos_agy: registros.at(-1).segundos_agy,
     tokens: json?.usage?.total_tokens,
-    conversacion: json?.conversation_id || undefined,
+    conversacion: final.idIntento || undefined,
     archivos,
     accesos,
     comandos: comandos.length ? comandos : undefined,
@@ -1412,6 +1624,7 @@ async function principal() {
     resumen.respuesta = limpia.length > maxRespuesta ? limpia.slice(0, maxRespuesta) + `\n… [recortada: ${limpia.length} caracteres en total]` : limpia;
     resumen.respuesta_completa = completa;
   }
+  vigilante?.escribir({ estado: final.estado, modelo: final.modelo, fin: final.fin });
   imprimir(resumen, o.formato);
   return CODIGOS[final.estado] ?? 1;
 }

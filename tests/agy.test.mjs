@@ -15,15 +15,20 @@ import {
   carpetaNueva,
   clasificar,
   construirArgs,
+  crearVigilante,
   ejecutar,
   extraerJson,
   extraerPermisos,
   gama,
+  leerEstado,
   limpiarEnlaces,
   motivoRechazoComando,
+  plazoDinamico,
+  plazoInicial,
   reglaComando,
   resolverModelo,
   resumirIncidencias,
+  topeDeTiempo,
 } from '../skills/delegar-antigravity/scripts/agy.mjs';
 import { LISTA_1025, LISTA_1110, LISTA_1210, LISTA_FUTURA } from './listas-modelos.mjs';
 
@@ -1222,4 +1227,198 @@ test('extraerPermisos entiende listas, negrita y comillas, y no toma otras líne
   assert.deepEqual(extraerPermisos('«PERMISO: pytest — correr»\n"PERMISO: a b"\n'), ['pytest — correr', 'a b']);
   assert.deepEqual(extraerPermisos('- Permiso: solo lectura\n'), [], 'en minúsculas es texto normal');
   assert.deepEqual(extraerPermisos('sin pedidos'), []);
+});
+
+// --- 0.6.0: vigilancia ---
+
+const SONDEO = { DELEGAR_AGY_SONDEO: '50' };
+const estaVivo = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test('vigilancia: una tarea que sigue avanzando pasa del plazo sin que la corten (regresión de Piper)', () => {
+  const p = preparar({ git: true });
+  const inicio = Date.now();
+  const { resumen, llamadas } = correr(p, 'trabaja_largo', ['--sin-avance', '1'], { ...SONDEO, FAKE_AGY_PASOS: '12', FAKE_AGY_CADA_MS: '200' });
+  assert.ok(Date.now() - inicio > 2000, 'debe durar más que el plazo');
+  assert.equal(resumen.estado, 'ok');
+  assert.equal(llamadas.length, 1);
+  const progreso = JSON.parse(readFileSync(join(p.carpeta, 'progreso.json'), 'utf8'));
+  assert.equal(progreso.estado, 'ok');
+  assert.ok(progreso.pasos >= 2);
+  assert.equal(progreso.ultima_herramienta, 'read_file');
+});
+
+test('vigilancia: sin pasos nuevos se corta, aunque el log tenga ruido, y conserva el id para rescatar', () => {
+  const p = preparar({ git: true });
+  const nieto = join(p.base, 'nieto.pid');
+  const inicio = Date.now();
+  const { codigo, resumen } = correr(p, 'colgado', ['--sin-avance', '1', '--margen', '1'], { ...SONDEO, FAKE_AGY_NIETO: nieto });
+  assert.ok(Date.now() - inicio < 12000, 'debe matarlo, no esperar el ultimátum de 15 s');
+  assert.doesNotMatch(resumen.detalle, /no respondió al cierre/);
+  assert.equal(resumen.estado, 'sin_avance');
+  assert.equal(codigo, 1);
+  assert.match(resumen.detalle, /correccion\.md/);
+  assert.match(resumen.conversacion, /^f\d+-/);
+  assert.equal(estaVivo(Number(readFileSync(nieto, 'utf8'))), false, 'el nieto de agy también debe terminar');
+  assert.match(readFileSync(p.incidencias, 'utf8'), /sin_avance/);
+  assert.deepEqual(resumen.intentos.map((i) => i.estado), ['sin_avance']);
+  assert.equal(leerEstado(p.carpeta).estado, 'sin_avance');
+});
+
+test('vigilancia: sin_avance no cambia de modelo solo, aun con --respaldo', () => {
+  const p = preparar({ git: true });
+  const { resumen, llamadas } = correr(p, 'colgado', ['--sin-avance', '1', '--respaldo'], SONDEO);
+  assert.equal(resumen.estado, 'sin_avance');
+  assert.equal(llamadas.length, 1);
+});
+
+test('vigilancia: un corte con «stream idle timeout» es modelo_mudo y --respaldo cambia de modelo', () => {
+  const p = preparar({ git: true });
+  const { resumen } = correr(p, 'colgado', ['--sin-avance', '1', '--modelo', 'argon-high', '--respaldo'], { ...SONDEO, ...lista(LISTA_1025), FAKE_AGY_MUDO: '1' });
+  assert.deepEqual(resumen.intentos.map((i) => i.estado), ['modelo_mudo', 'modelo_mudo']);
+  assert.deepEqual(resumen.intentos.map((i) => i.modelo), ['gemini-4-argon-high', 'gemini-3.8-flash-high']);
+  assert.doesNotMatch(resumen.detalle, /correccion\.md/);
+});
+
+test('vigilancia: --sin-avance 0 no corta nunca', () => {
+  const p = preparar({ git: true });
+  const { resumen } = correr(p, 'trabaja_largo', ['--sin-avance', '0'], { ...SONDEO, FAKE_AGY_PASOS: '2', FAKE_AGY_PAUSA_EN: '1', FAKE_AGY_PAUSA_MS: '1500' });
+  assert.equal(resumen.estado, 'ok');
+});
+
+test('vigilancia: el tope depende del modelo de cada intento; --timeout lo reemplaza y 0 lo quita', () => {
+  assert.equal(topeDeTiempo('gemini-3.8-flash-low'), 7200);
+  assert.equal(topeDeTiempo('gemini-4-argon-high'), 14400);
+  const p = preparar({ git: true });
+  const sinFlag = correr(p, 'mudo', ['--modelo', 'argon-high', '--respaldo'], { ...lista(LISTA_1025), FAKE_AGY_MUDOS: 'gemini-4-argon-high' });
+  assert.deepEqual(sinFlag.llamadas.map((l) => arg(l.args, '--print-timeout')), ['14400s', '7200s']);
+  const q = preparar({ git: true });
+  assert.equal(arg(correr(q, 'exito', ['--timeout', '900']).llamadas[0].args, '--print-timeout'), '900s');
+  const r = preparar({ git: true });
+  assert.equal(arg(correr(r, 'exito', ['--timeout', '0']).llamadas[0].args, '--print-timeout'), '0s');
+});
+
+test('vigilancia: con --timeout 0, ejecutar no arma temporizador y el proceso termina solo', async () => {
+  const p = preparar();
+  const previo = process.env.FAKE_AGY_ESCENARIO;
+  process.env.FAKE_AGY_ESCENARIO = 'vacio';
+  const r = await ejecutar(falso, ['-p', 'x'], { cwd: p.proyecto, salida: join(p.carpeta, 's.json'), errores: join(p.carpeta, 'e.txt'), limiteMs: 0 });
+  if (previo === undefined) delete process.env.FAKE_AGY_ESCENARIO;
+  else process.env.FAKE_AGY_ESCENARIO = previo;
+  assert.equal(r.vencido, false);
+  assert.equal(r.codigo, 0);
+});
+
+test('vigilancia: plazo inicial por gama y nivel, que crece con el silencio más largo visto', () => {
+  assert.equal(plazoInicial('gemini-3.8-flash-low'), 900);
+  assert.equal(plazoInicial('gemini-3.8-flash-medium'), 1200);
+  assert.equal(plazoInicial('gemini-3.8-flash-high'), 1800);
+  assert.equal(plazoInicial('gemini-3.8-flash-high', 'low'), 900, '--esfuerzo manda sobre el nombre');
+  assert.equal(plazoInicial('gemini-3.8-flash', 'xhigh'), 1800);
+  assert.equal(plazoInicial('gemini-4-argon-low'), 2700);
+  assert.equal(plazoInicial('nombre-raro'), 1800);
+  assert.equal(plazoDinamico(900, 100), 900);
+  assert.equal(plazoDinamico(900, 700), 2100);
+});
+
+test('vigilancia: una pausa larga amplía el plazo y evita el corte que daría el inicial', () => {
+  const p = preparar();
+  const previo = process.env.DELEGAR_AGY_HOME;
+  process.env.DELEGAR_AGY_HOME = p.agyHome;
+  try {
+    const id = 'abcd';
+    const dir = join(p.agyHome, 'brain', id, '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const t = join(dir, 'transcript.jsonl');
+    writeFileSync(t, '');
+    let reloj = 1_000_000;
+    const v = crearVigilante({ encargo: p.encargo, conversacion: id, modelo: 'gemini-3.8-flash-low', carpeta: p.carpeta, inicioTotal: reloj, tope: 7200, ahora: () => reloj });
+    const min = 60_000;
+    // 14 min de silencio (bajo los 15 del inicial) y da un paso: el plazo pasa a 42 min.
+    reloj += 14 * min;
+    assert.equal(v.sondear(), false);
+    writeFileSync(t, '{"created_at":"2020-01-01T00:00:00Z"}\n');
+    assert.equal(v.sondear(), false);
+    // A los 16 min ya se habría cortado con el inicial; a los 43, se corta.
+    reloj += 16 * min;
+    assert.equal(v.sondear(), false, 'el inicial lo habría cortado aquí');
+    reloj += 27 * min;
+    assert.equal(v.sondear(), true);
+    assert.equal(JSON.parse(readFileSync(join(p.carpeta, 'progreso.json'), 'utf8')).plazo_s, 2520);
+  } finally {
+    if (previo === undefined) delete process.env.DELEGAR_AGY_HOME;
+    else process.env.DELEGAR_AGY_HOME = previo;
+  }
+});
+
+test('vigilancia: al continuar una conversación, lo que ya tenía no cuenta como avance', () => {
+  const p = preparar();
+  const previo = process.env.DELEGAR_AGY_HOME;
+  process.env.DELEGAR_AGY_HOME = p.agyHome;
+  try {
+    const dir = join(p.agyHome, 'brain', 'vieja', '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'transcript.jsonl'), '{"created_at":"2020-01-01T00:00:00Z"}\n');
+    let reloj = 1_000_000;
+    const v = crearVigilante({ encargo: p.encargo, conversacion: 'vieja', modelo: 'gemini-3.8-flash-low', plazoFijo: 60, carpeta: p.carpeta, inicioTotal: reloj, tope: 0, ahora: () => reloj });
+    reloj += 61_000;
+    assert.equal(v.sondear(), true);
+  } finally {
+    if (previo === undefined) delete process.env.DELEGAR_AGY_HOME;
+    else process.env.DELEGAR_AGY_HOME = previo;
+  }
+});
+
+test('vigilancia: encargos en paralelo no confunden su conversación ni dan falso edito_en_lectura', () => {
+  const p = preparar();
+  const raiz = join(p.base, 'lote');
+  for (const n of ['uno', 'dos']) {
+    mkdirSync(join(raiz, n), { recursive: true });
+    writeFileSync(join(raiz, n, 'encargo.md'), 'Encargo.\n');
+  }
+  const { resumen } = correr(p, 'trabaja_largo', ['--lote', raiz, '--sin-avance', '1'], { ...SONDEO, FAKE_AGY_PASOS: '6', FAKE_AGY_CADA_MS: '300' }, { encargo: null });
+  assert.deepEqual(resumen.encargos.map((e) => e.estado), ['ok', 'ok'].sort());
+  const leer = (n) => JSON.parse(readFileSync(join(raiz, n, 'progreso.json'), 'utf8')).conversacion;
+  assert.notEqual(leer('uno'), leer('dos'));
+  for (const n of ['uno', 'dos']) {
+    const primera = readFileSync(join(p.agyHome, 'brain', leer(n), '.system_generated', 'logs', 'transcript.jsonl'), 'utf8').split('\n')[0];
+    assert.match(primera.replace(/\\+/g, '/'), new RegExp(`lote/${n}/encargo\\.md`));
+  }
+});
+
+test('vigilancia: --estado dice cómo va, sin el contenido de los pasos', () => {
+  const p = preparar();
+  const vacia = spawnSync(process.execPath, [script, '--estado', p.carpeta, '--formato', 'json'], { encoding: 'utf8' });
+  assert.equal(vacia.status, 1);
+  assert.equal(JSON.parse(vacia.stdout).estado, 'sin_progreso');
+
+  const ahora = 10_000_000;
+  const base = { estado: 'trabajando', pid: process.pid, modelo: 'gemini-4-argon-high', conversacion: 'id', inicio: ahora - 1_200_000, pasos: 7, ultima_herramienta: 'read_file', plazo_s: 2700, tope_s: 14400 };
+  const escribir = (extra) => writeFileSync(join(p.carpeta, 'progreso.json'), JSON.stringify({ ...base, ...extra }));
+
+  escribir({ ultimo_avance: ahora - 60_000 });
+  let e = leerEstado(p.carpeta, ahora);
+  assert.equal(e.estado, 'trabajando');
+  assert.equal(e.detalle, undefined);
+  assert.match(e.tabla.join('\n'), /lleva: 20 min[\s\S]*pasos: 7 \(última herramienta: read_file\)[\s\S]*último paso: hace 1 min[\s\S]*plazo sin avance: 45 min/);
+
+  escribir({ ultimo_avance: ahora - 720_000 });
+  assert.match(leerEstado(p.carpeta, ahora).detalle, /sin avance desde hace 12 min/);
+
+  // Un pid que ya terminó.
+  const muerto = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
+  escribir({ ultimo_avance: ahora, pid: Number(muerto.stdout) });
+  assert.equal(leerEstado(p.carpeta, ahora).estado, 'interrumpido');
+
+  const q = preparar({ git: true });
+  writeFileSync(q.encargo, 'DNI 00000001 inventado.\n');
+  correr(q, 'trabaja_largo', [], { ...SONDEO, FAKE_AGY_PASOS: '4', FAKE_AGY_CADA_MS: '100' });
+  const texto = readFileSync(join(q.carpeta, 'progreso.json'), 'utf8');
+  assert.doesNotMatch(texto, /CONTENIDO-SECRETO|00000001/);
 });
