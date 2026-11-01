@@ -8,7 +8,7 @@ license: CC BY-NC-ND 4.0
 
 Tú eres el agente principal y Antigravity CLI (`agy`) es tu subagente, con su propia cuota de modelos. Tú decides qué delegar, redactas el encargo, revisas su plan, le abres o cierras accesos en cada llamada, respondes sus pedidos de permiso y verificas. agy hace el trabajo pesado: leer muchos archivos, generar texto largo, editar código y correr sus comandos. Nunca decide sus propios permisos.
 
-Delegar ahorra cuando lo que agy va a leer o escribir es mucho mayor que lo que te cuesta escribir el encargo (unas 20 líneas) y leer el resumen (unas 10). Cada llamada tarda entre 15 s y 20 min, y gasta entre 30 y 500 mil tokens de la cuota de Antigravity, no de la tuya: lo más caro son las revisiones de muchos archivos con un modelo de razonamiento alto.
+Delegar ahorra cuando lo que agy va a leer o escribir es mucho mayor que lo que te cuesta escribir el encargo (unas 20 líneas) y leer el resumen (unas 10). Una llamada tarda desde 15 s hasta lo que necesite la tarea (el script la vigila), y gasta entre 30 y 500 mil tokens de la cuota de Antigravity, no de la tuya: lo más caro son las revisiones de muchos archivos con un modelo de razonamiento alto.
 
 ## ¿Conviene delegar?
 
@@ -67,8 +67,8 @@ Los alias de familia también valen (`flash-high`, `argon-high`, `pro-high`). Si
 
 - Empieza por el nivel más bajo que alcance para la tarea. Un nivel alto no compensa un encargo vago: primero aclara el encargo.
 - Si la respuesta quedó superficial (no vio el error, resumió en vez de analizar, dejó puntos sin responder), sube un nivel, o de `rapido-high` a `potente-medium`, en una tarea nueva con el encargo corregido.
-- Si dio `timeout` o `modelo_mudo`, no subas: acota (menos archivos, funciones nombradas, un máximo de hallazgos) o baja de gama.
-- La gama potente tarda de 5 a 20 min y a veces se queda muda: úsala solo cuando el criterio importa más que el tiempo, y siempre con `--respaldo`.
+- Si dio `sin_avance` o `modelo_mudo`, no subas: acota (menos archivos, funciones nombradas, un máximo de hallazgos) o baja de gama.
+- La gama potente tarda de 5 a más de 20 min y a veces se queda muda: úsala solo cuando el criterio importa más que el tiempo, y siempre con `--respaldo`.
 
 La regla de respaldo, los tiempos medidos, los textos de error reales y la lista observada en cada fecha están en [references/modelos.md](references/modelos.md). Léelo si un modelo falla o si dudas entre dos.
 
@@ -147,12 +147,27 @@ node <carpeta de esta skill>/scripts/agy.mjs --encargo <carpeta>/encargo.md --cw
 - `--modo plan` le pide pasos, archivos y los comandos que necesitará, sin tocar nada (ver «Trabajar con agy como subagente»).
 - `--acceso sandbox`, `--terminal "<comando>"` y `--web <dominio>` le dan acceso, solo para esa llamada.
 - `--respaldo` reintenta una vez un fallo pasajero de la plataforma y cambia a otro modelo Gemini si hay error de cuota, si el modelo ya no existe o si se quedó mudo. Úsalo salvo que el usuario haya pedido un modelo concreto.
-- `--timeout <s>` (por defecto 600). La gama rápida suele tardar menos de un minuto; las revisiones grandes y la gama potente, hasta 20.
+- `--sin-avance <s>` y `--timeout <s>`: normalmente no los pongas (ver «Tareas largas»).
 - `--esfuerzo low|medium|high` reemplaza el nivel que trae el nombre del modelo.
 - `--esquema <archivo.json>` pide una respuesta estructurada: el JSON queda en `respuesta.json`, aunque agy lo haya escrito dentro del texto. Si no trae un JSON válido, el estado es `incompleto`.
 - `--add-dir <carpeta>` da acceso a otra carpeta y `--seco` muestra el comando sin ejecutarlo.
 
-El script cierra la entrada estándar, guarda la salida en archivos, corta el proceso si se pasa del tiempo y nunca usa `--dangerously-skip-permissions`. También lee el log de agy de esa ejecución, donde quedan los reintentos internos que no salen en stderr. Cada ejecución agrega una línea a `historial.jsonl` en la carpeta del encargo (modelo, estado, tiempo, tokens, el texto de error de agy y esos reintentos): consúltalo si un fallo no se entiende, porque `agy-errores.txt` se sobrescribe en cada intento. Si la tarea puede tardar más de un par de minutos, ejecútalo en segundo plano si tu entorno lo permite y sigue con otra cosa mientras tanto.
+El script cierra la entrada estándar, guarda la salida en archivos, corta el proceso si se pasa del tiempo y nunca usa `--dangerously-skip-permissions`. También lee el log de agy de esa ejecución, donde quedan los reintentos internos que no salen en stderr. Cada ejecución agrega una línea a `historial.jsonl` en la carpeta del encargo (modelo, estado, tiempo, tokens, el texto de error de agy y esos reintentos): consúltalo si un fallo no se entiende, porque `agy-errores.txt` se sobrescribe en cada intento.
+
+**Tareas largas.** Deja que agy tome el tiempo que necesite: el script lo vigila por ti, sin gastar tokens y sin interrumpirlo.
+
+- **Ejecútalo en segundo plano** si la tarea puede pasar de un par de minutos y tu entorno lo permite, y sigue con otra cosa. Un comando en primer plano suele tener su propio límite, y al vencer también corta a agy.
+- **No pongas un `--timeout` corto para asegurarte:** es lo que corta trabajo sano. Sin ese flag solo hay un tope contra bucles (2 h en la gama rápida y 4 h en la potente); `--timeout 0` lo quita.
+- **El corte real es la falta de avance:** cada 30 s, el script mira si agy dio algún paso nuevo. El plazo empieza según el modelo (de 15 min con `rapido-low` a 45 con `potente`) y crece hasta 3 veces el silencio más largo visto, así que una tarea con pausas largas gana margen sola. Fíjalo con `--sin-avance <s>` solo si tienes un motivo, y `0` lo desactiva.
+- **Para saber cómo va,** si el usuario pregunta o tu entorno no te avisa al terminar (cada unos 15 min basta):
+
+```bash
+node <carpeta de esta skill>/scripts/agy.mjs --estado <carpeta del encargo>
+```
+
+Dice pasos, última herramienta, hace cuánto fue su último paso, plazo y tope. No puede decir cuánto falta, y al modelo tampoco se le puede preguntar: una llamada no recibe mensajes mientras corre. Varios minutos sin pasos son normales, porque una sola llamada de razonamiento duró 11,5 min en una tarea sana: no la cortes ni la repitas. Si dice `interrumpido`, el script murió con su terminal: continúa con `--conversacion` si hay id.
+
+Evita encargos que obliguen a muchos reemplazos uno a uno en un archivo grande: gastan mucha cuota. Pide el cambio por bloques o hazlo con un script. Tras una edición, mira en un diff que ignore espacios y líneas en blanco las líneas de control quitadas (`else`, llaves, `return`).
 
 **Varios encargos a la vez.** Crea una carpeta con una subcarpeta por encargo, cada una con su `encargo.md` (y los archivos que deba leer), y lánzalos con una sola llamada:
 
@@ -195,8 +210,9 @@ El tiempo de reloj es el que esperó el usuario; los segundos activos de agy sol
 | `edito_en_lectura` | agy cambió archivos en una tarea de solo lectura. Revisa el diff de esos archivos y revierte lo que no se pidió, sin tocar cambios previos del usuario. Sin git, primero descarta que sean cambios tuyos |
 | `cuota` | Repite con `--respaldo` o con otro alias. Si todos fallan, hazlo tú o pregunta al usuario |
 | `parcial` | agy terminó con un error o un corte, pero dejó una respuesta. Lee `respuesta.md` antes de nada: suele estar completa o casi. Si está cortada, continúa con `--conversacion` pidiendo solo lo que falta; si el detalle habla del límite de salida, pide menos puntos y en formato corto |
-| `timeout` | Si hay `conversación`, rescátala una vez: escribe `correccion.md` pidiendo que entregue ya lo que tenga, sin leer más, y continúa con `--conversacion`. Si el rescate también vence, no insistas: divide la tarea, acota el entregable o hazla tú. Sin conversación, divide la tarea o sube `--timeout` |
-| `modelo_mudo` | El modelo leyó todo, pero su llamada final no devolvió nada. **No rescates** (el rescate cae en la misma llamada muda): repite con `--respaldo`, que pasa a la gama rápida, o con otro alias, y acota el encargo. Si ya venía de `--respaldo`, toda la cadena falló: hazla tú o divídela |
+| `sin_avance` | agy no dio ningún paso en todo el plazo y el script lo cortó. Rescátala una vez: escribe `correccion.md` pidiendo que entregue ya lo que tenga, sin leer más, y continúa con `--conversacion`. Si tampoco avanza, no insistas: divide la tarea, acota el entregable o hazla tú |
+| `timeout` | Llegó al tope. Mira los pasos en `progreso.json`: si avanzaba, continúa con `--conversacion` y un `--timeout` mayor; si repetía lo mismo, o si pusiste tú un `--timeout` corto, rescátala una vez como en `sin_avance` o divide la tarea |
+| `modelo_mudo` | El modelo no devolvió nada y agy registró el silencio. **No rescates** (el rescate cae en la misma llamada muda): repite con `--respaldo`, que pasa a la gama rápida, o con otro alias, y acota el encargo. Si ya venía de `--respaldo`, toda la cadena falló: hazla tú o divídela |
 | `transitorio` | Un fallo pasajero de la plataforma (sin capacidad, error interno, conexión cortada). `--respaldo` ya reintentó y cambió de modelo; sin él, espera un minuto y repite con `--respaldo` |
 | `modelo_invalido` | El modelo no existe hoy: elige otro de `disponibles` o usa un alias |
 | `secretos` | El espacio de trabajo tiene secretos: pregunta al usuario antes de usar `--permitir-secretos` |
@@ -267,7 +283,7 @@ Si un comando falla dentro del sandbox, agy puede reintentarlo fuera, se le deni
 
 Una revisión de un diff grande o de un proyecto entero es lo que más tarda y más tokens gasta. Además, el modelo de agy puede desconocer APIs o versiones recientes y señalar como error algo que es válido.
 
-- Usa `--timeout 1200`, `--respaldo` y pide en el entregable como máximo 6 hallazgos, priorizados y en formato corto: con 10, la respuesta pasó el límite de salida. Flash también lo pasa si escribe su razonamiento en la respuesta: el script ya le pide que no lo haga, pero un diff más corto es lo que más ayuda.
+- Usa `--respaldo`, ejecútala en segundo plano y pide en el entregable como máximo 6 hallazgos, priorizados y en formato corto: con 10, la respuesta pasó el límite de salida. Flash también lo pasa si escribe su razonamiento en la respuesta: el script ya le pide que no lo haga, pero un diff más corto es lo que más ayuda.
 - Lista solo los archivos que importan; para un diff, guarda el diff en un archivo de la carpeta del encargo y pásale ese archivo.
 - Si el repositorio tiene `CLAUDE.md`, secretos o documentos que agy no debe ver, trabaja sobre una copia: `git archive HEAD` de los archivos que importan, desempaquetada en la carpeta del encargo, más el diff. Usa esa carpeta como `--cwd`.
 - Para una segunda opinión de criterio, `potente-high`; para una revisión mecánica (erratas, consistencia), `rapido-high`.

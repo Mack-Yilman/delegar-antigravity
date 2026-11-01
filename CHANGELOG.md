@@ -1,5 +1,15 @@
 # Historial de versiones
 
+## 0.6.0 — 2026-10-31
+
+Un límite fijo de tiempo cortaba tareas sanas: en un caso real, Flash daba un paso cada 4 s y Argon salía de una llamada de 11,5 min cuando los cortaron. Ahora el script vigila si el modelo avanza, no cuánto lleva.
+
+- **Vigilancia sin gastar tokens:** cada 30 s mira la transcripción que agy escribe en vivo. Solo corta si no hay ningún paso nuevo en todo el plazo, con el estado nuevo `sin_avance` (o `modelo_mudo`, si agy registró el silencio).
+- **Plazo dinámico:** empieza según el modelo (de 15 min con `rapido-low` a 45 con `potente`) y crece hasta 3 veces el silencio más largo visto en esa corrida. `--sin-avance <s>` lo fija a mano y `0` lo desactiva.
+- **`--timeout` ya no es de 600 s:** sin el flag, es un tope contra bucles de 2 h en la gama rápida y 4 h en la potente. `--timeout 0` lo quita. Un valor explícito se respeta como antes.
+- **`--estado <carpeta>`:** dice cómo va una ejecución (pasos, última herramienta, hace cuánto fue su último paso, plazo y tope), a partir de `progreso.json`. Solo metadatos, nunca el contenido de los pasos.
+- **Un corte conserva la conversación:** el id se obtiene mientras corre, así que siempre se puede rescatar. Antes, un corte del propio script lo perdía.
+
 ## 0.5.0 — 2026-10-31
 
 agy deja de estar sin terminal cuando su orquestador lo decide. Probado en un banco con agy real hasta cumplir una checklist de calidad en dos iteraciones seguidas.

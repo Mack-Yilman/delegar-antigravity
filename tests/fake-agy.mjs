@@ -9,7 +9,10 @@
 //   respuesta; salida_larga_vacia; imagen (deja un .jpg en DELEGAR_AGY_HOME/brain/<id>/); json_en_texto;
 //   toca_otro_encargo (reescribe los archivos propios de otra carpeta de encargo dentro del --cwd);
 //   toca_ajustes (reescribe settings.json); pide_permiso (responde con líneas PERMISO:); comandos (deja una transcripción como la real, agy 1.4.12);
-//   denegado_fuera (pidió salir del sandbox, se le denegó y queda vacía la respuesta).
+//   denegado_fuera (pidió salir del sandbox, se le denegó y queda vacía la respuesta);
+//   trabaja_largo (da FAKE_AGY_PASOS pasos, uno cada FAKE_AGY_CADA_MS, con una pausa de FAKE_AGY_PAUSA_MS en el paso
+//   FAKE_AGY_PAUSA_EN, y termina); colgado (da el primer paso y calla; solo ruido en el log, y con FAKE_AGY_MUDO
+//   el «stream idle timeout»).
 // `agy models` responde con FAKE_AGY_MODELOS (separados por comas; por defecto, la lista del 2026-10-12).
 // Como el agy real, un modelo que no está en esa lista da «invalid model selection» en cualquier escenario.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -224,6 +227,39 @@ switch (escenario) {
     // Con FAKE_AGY_RAIZ, además edita un respuesta.md del proyecto, que no es de ninguna carpeta de encargo.
     if (process.env.FAKE_AGY_RAIZ) writeFileSync(join(process.cwd(), 'respuesta.md'), 'editado por agy falso\n');
     salir(exito('Listo.\n'));
+    break;
+  }
+  case 'trabaja_largo':
+  case 'colgado': {
+    // Como el agy real (sonda del 2026-10-31): escribe transcript.jsonl en vivo y su primer paso trae el mensaje.
+    // Solo --conversation fija el id; si no, uno propio por proceso, para las pruebas en paralelo.
+    const id = valor('--conversation') ?? `f${process.pid}-0000-4000-8000-000000000000`;
+    const dir = join(process.env.DELEGAR_AGY_HOME, 'brain', id, '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const transcript = join(dir, 'transcript.jsonl');
+    const paso = (type, extra = {}) => appendFileSync(transcript, JSON.stringify({ type, created_at: new Date().toISOString(), ...extra }) + '\n');
+    paso('USER_INPUT', { content: valor('-p') });
+    if (escenario === 'colgado') {
+      // Ruido real del log, una línea por minuto: no es avance. FAKE_AGY_MUDO agrega el reintento tras un silencio.
+      const logs = join(process.env.DELEGAR_AGY_HOME, 'log');
+      mkdirSync(logs, { recursive: true });
+      const log = join(logs, `cli-${process.pid}.log`);
+      appendFileSync(log, `Created conversation ${id}\n`);
+      if (process.env.FAKE_AGY_MUDO) appendFileSync(log, 'Run: attempt 1 failed (stream reading error: stream idle timeout (5m0s): context deadline exceeded), retrying in 4s\n');
+      setInterval(() => appendFileSync(log, 'W code_assist_client.go:207] AICode FetchConfig failed\n'), 50);
+      const nieto = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit' });
+      if (process.env.FAKE_AGY_NIETO) writeFileSync(process.env.FAKE_AGY_NIETO, String(nieto.pid));
+      break;
+    }
+    let dados = 0;
+    const total = Number(process.env.FAKE_AGY_PASOS ?? 8);
+    const pausa = () => (dados === Number(process.env.FAKE_AGY_PAUSA_EN ?? -1) ? Number(process.env.FAKE_AGY_PAUSA_MS) : Number(process.env.FAKE_AGY_CADA_MS ?? 200));
+    const dar = () => {
+      paso('PLANNER_RESPONSE', { content: 'CONTENIDO-SECRETO-DEL-PASO', tool_calls: [{ name: 'read_file', args: {} }] });
+      if (++dados >= total) salir({ ...exito('Terminé.\n'), conversation_id: id });
+      setTimeout(dar, pausa());
+    };
+    setTimeout(dar, pausa());
     break;
   }
   case 'auth':

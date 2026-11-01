@@ -36,7 +36,7 @@ Cada gama tiene tres niveles de esfuerzo: `low`, `medium` y `high`. El alias `po
 
 - **Empieza por el nivel más bajo que alcance:** cada nivel arriba multiplica el tiempo y los tokens, y un nivel alto no compensa un encargo vago.
 - **Sube un nivel** (o de `rapido-high` a `potente-medium`) si la respuesta quedó superficial: no vio el error, resumió en vez de analizar o dejó puntos sin responder. Hazlo en una tarea nueva con el encargo corregido.
-- **Baja de gama o acota** si dio `timeout` o `modelo_mudo`: menos archivos, funciones nombradas y un máximo de hallazgos.
+- **Baja de gama o acota** si dio `sin_avance` o `modelo_mudo`: menos archivos, funciones nombradas y un máximo de hallazgos.
 - **Lo mecánico nunca va a la gama potente:** tarda más y no sale mejor. Una comparación palabra por palabra no va a ningún modelo: usa un script.
 
 ## Respaldo ante cuota, modelo inexistente, modelo mudo o fallo transitorio
@@ -91,7 +91,18 @@ Si toda la cadena falla por cuota, no sigas probando: haz la tarea tú o pregunt
 
 **En paralelo:** 5 tareas Gemini a la vez no agotaron la cuota (2026-10-15). 5 tareas con Claude dentro de agy (unos 130 mil tokens cada una) sí la agotaron, y se repone en unas 5 h (2026-10-13). Por eso `--respaldo` nunca cae en Claude.
 
-Una tarea mínima dentro de un proyecto ya consume más de 60 mil tokens con Gemini, porque agy carga contexto del espacio de trabajo: no delegues tareas pequeñas. En las revisiones grandes, pide como máximo 6 hallazgos en formato corto y usa `--timeout 1200`: con 10 hallazgos, Flash High pasó el límite de salida.
+Una tarea mínima dentro de un proyecto ya consume más de 60 mil tokens con Gemini, porque agy carga contexto del espacio de trabajo: no delegues tareas pequeñas. En las revisiones grandes, pide como máximo 6 hallazgos en formato corto: con 10 hallazgos, Flash High pasó el límite de salida.
+
+**Los tiempos agotados de esta tabla no son el tiempo que la tarea necesitaba:** hasta la 0.5.0, el límite fijo cortaba corridas vivas. El 31/10, Flash Medium daba un paso cada 4 s al cortarse a los 10 min, y Argon High salió de una llamada de 11,5 min e iba por otra al cortarse a los 20. Desde la 0.6.0, el script corta solo si no hay pasos nuevos en todo el plazo.
+
+| Modelo | Plazo inicial sin pasos nuevos | Tope contra bucles |
+|---|---|---|
+| `rapido-low` | 15 min | 2 h |
+| `rapido-medium` | 20 min | 2 h |
+| `rapido-high` | 30 min | 2 h |
+| `potente-*` | 45 min | 4 h |
+
+El plazo crece hasta 3 veces el silencio más largo visto en la corrida. Estos valores salen de pocas corridas medidas: si `--incidencias` muestra `sin_avance` en tareas sanas, súbelos en `PLAZOS`.
 
 **Argon es intermitente:** el 24/10 terminó dos revisiones en 8 y 10 min, y el 25/10 se quedó mudo tres veces seguidas, incluso con 4 archivos. No depende del tamaño. El script lo detecta (`modelo_mudo`) y, con `--respaldo`, pasa a `rapido-high`.
 

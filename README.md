@@ -102,7 +102,7 @@ node skills/delegar-antigravity/scripts/agy.mjs --encargo <carpeta>/encargo.md -
 | Mecánica: extraer, listar, formatear, resumir | `rapido-low` o `rapido-medium` (por defecto) |
 | Intermedia: borradores, refactorizaciones, revisar textos | `rapido-high` |
 | Compleja pero acotada: un error sutil en pocos archivos | `potente-medium` |
-| La más difícil: arquitectura, auditoría, revisión profunda | `potente-high` (de 5 a 20 min) |
+| La más difícil: arquitectura, auditoría, revisión profunda | `potente-high` (de 5 a más de 20 min) |
 
 La gama rápida son las familias Flash; la potente, todas las demás (hoy Gemini 4 Argon). Una familia o versión nueva entra sola, sin actualizar la skill.
 
@@ -117,13 +117,17 @@ La gama rápida son las familias Flash; la potente, todas las demás (hoy Gemini
 | `--esquema <archivo.json>` | Pide una respuesta estructurada; el JSON queda en `respuesta.json` aunque agy lo escriba dentro del texto |
 | `--permitir-secretos` | Ejecuta aunque el espacio de trabajo tenga `.env`, claves o credenciales; el agente solo lo usa con tu permiso |
 | `--conversacion <id>` | Continúa una conversación anterior, para corregir |
-| `--timeout <s>` | Tiempo límite, por defecto 600; usa 1200 para revisiones grandes |
+| `--timeout <s>` | Tope contra bucles: sin el flag, 2 h en la gama rápida y 4 h en la potente; `0` lo quita |
+| `--sin-avance <s>` | Corta si no hay pasos nuevos en ese plazo; sin el flag, se adapta a la tarea; `0` lo desactiva |
+| `--estado <carpeta>` | Dice cómo va una ejecución, sin gastar tokens |
 | `--formato json` | Resumen en JSON en lugar de texto |
 | `--seco` | Muestra el comando sin ejecutarlo |
 | `--anotar "<lección>"` | Guarda en el registro central la causa de un fallo y cómo se resolvió |
 | `--incidencias` | Resume en markdown el registro central: qué falla, con qué modelo y qué se aprendió |
 
 Códigos de salida: `0` ok; `2` incompleto (acción denegada o respuesta vacía), parcial (un error que dejó respuesta), archivos editados en una tarea de lectura o un lote con fallos; `3` cuota agotada; `4` secretos en el espacio de trabajo y `1` otros errores (entre ellos `modelo_mudo` y `transitorio`).
+
+**Las tareas largas no se cortan por tiempo.** Cada 30 s, el script mira la transcripción que agy escribe en vivo, sin gastar tokens y sin interrumpirlo. Solo lo corta si no da ningún paso nuevo en todo el plazo, que empieza según el modelo (de 15 min con `rapido-low` a 45 con `potente`) y crece hasta 3 veces el silencio más largo visto en esa corrida. Si lo corta, conserva la conversación para rescatarla. Mientras tanto, `--estado <carpeta>` dice qué lleva hecho y hace cuánto fue su último paso. No puede decir cuánto falta: una llamada en curso no recibe mensajes, así que al modelo no se le puede preguntar.
 
 El script lee además el log que agy deja por cada ejecución en `~/.gemini/antigravity-cli/log/`, porque ahí quedan los reintentos internos que no salen en su salida: así distingue un modelo que se quedó mudo de un simple tiempo agotado. Y avisa si agy dejó archivos en su carpeta `brain/` (imágenes, planes) en lugar del proyecto.
 
