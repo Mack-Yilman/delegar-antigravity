@@ -77,6 +77,12 @@ switch (escenario) {
     writeFileSync(join(process.cwd(), 'nuevo.txt'), 'creado por agy falso\n');
     salir(exito('Creé nuevo.txt.\n'));
     break;
+  case 'crlf_doble':
+    // Lo que dejó Flash al editar un archivo CRLF en Inti (2026-11-01); el binario lleva NUL y no se toca.
+    writeFileSync(join(process.cwd(), 'doble.txt'), 'uno\r\r\ndos\r\r\r\ntres\r\n');
+    writeFileSync(join(process.cwd(), 'bin.dat'), Buffer.from('a\0b\r\r\n', 'latin1'));
+    salir(exito('Edité doble.txt.\n'));
+    break;
   case 'edita_ignorado':
     // Un archivo que git ignora (como CLAUDE.md o .dev.vars en los repos del usuario).
     appendFileSync(join(process.cwd(), 'CLAUDE.md'), 'editado por agy falso\n');

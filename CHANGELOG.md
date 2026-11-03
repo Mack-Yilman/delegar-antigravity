@@ -1,5 +1,13 @@
 # Historial de versiones
 
+## 0.6.1 — 2026-11-02
+
+Parche con los fallos que aparecieron al usar la 0.6.0 en proyectos reales.
+
+- **Modo edición sin terminal:** el mensaje pide a agy crear y editar archivos directamente, sin comprobar carpetas con comandos. Flash pidió `dir` antes de crear un archivo y una sola petición dejó vacía su respuesta.
+- **CRLF doble corregido solo:** al editar un archivo CRLF, Flash a veces escribe `\r\r\n` y el diff marca el archivo entero. En modo edición, el script lo normaliza a `\r\n` en los archivos de texto que tocó agy y lo dice en el resumen (`saltos_corregidos`). Los binarios y los archivos de más de 5 MB no se tocan.
+- **Fallos del sandbox:** con terminal, agy debe decir qué comando falló por el sandbox (EPERM) y pedir permiso, en lugar de dar por verificado lo que no pudo correr. Las pruebas que escriben caché (vitest, jest) fallan dentro del sandbox: la skill explica cómo correrlas.
+
 ## 0.6.0 — 2026-10-31
 
 Un límite fijo de tiempo cortaba tareas sanas: en un caso real, Flash daba un paso cada 4 s y Argon salía de una llamada de 11,5 min cuando los cortaron. Ahora el script vigila si el modelo avanza, no cuánto lleva.
