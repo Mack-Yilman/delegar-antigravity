@@ -44,6 +44,7 @@ Desde la 0.5.0, tu agente puede dejar que agy corra comandos, por ejemplo sus pr
 - El sandbox de Antigravity necesita Windows 11 24H2 o posterior, Linux o macOS. Según su documentación, sin él `--acceso sandbox` no da terminal. Se probó solo en Windows 11 24H2.
 - Lo que protege de verdad es el sandbox: agy puede burlar las reglas de denegación encadenando comandos.
 - El sandbox deja leer la carpeta temporal del sistema y los `.env` del proyecto (ahí protege el bloqueo por secretos del script).
+- Las pruebas que escriben caché o temporales (vitest, vite, jest) fallan dentro del sandbox con EPERM: tu agente las corre él o autoriza ese comando con `--terminal`.
 - Lo que agy lea o la salida de sus comandos sale a los servidores de Google.
 
 ## Requisitos
@@ -141,7 +142,7 @@ La lista de `agy models` tarda unos 12 s, así que el script la guarda unas hora
 ## Seguridad y privacidad
 
 - Lo que lee agy se envía a los servidores de Google, y agy puede leer cualquier archivo de su espacio de trabajo aunque el encargo se lo prohíba. La skill no delega datos de pacientes, datos personales, secretos ni credenciales sin tu permiso explícito, y el script se detiene solo si encuentra `.env`, `.dev.vars`, claves o credenciales (también `client_secret*.json`, cuentas de servicio y `.netrc`). Si copias documentos a la carpeta del encargo, el agente te ofrece borrarla al terminar.
-- agy trabaja sin terminal salvo que tu agente le dé acceso para esa llamada, siempre con `--sandbox` y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
+- agy trabaja sin terminal salvo que tu agente le dé acceso para esa llamada, siempre con `--sandbox` y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno. En una de edición, si agy dejó saltos de línea `\r\r\n` en un archivo de texto, el script los corrige y lo avisa. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
 - Cada delegación gasta la cuota de Antigravity, no la de tu agente.
 
 ## Licencia

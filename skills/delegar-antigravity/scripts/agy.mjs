@@ -538,7 +538,9 @@ export function leerEstado(carpeta, ahora = Date.now()) {
 const PIDE_PERMISO =
   ' Si necesitas un comando o un acceso que no tienes, no lo intentes: una sola petición denegada vacía tu respuesta y pierdes todo el trabajo. Termina lo que puedas, entrégalo y agrega una línea por pedido: «PERMISO: <comando exacto> — <por qué>». Tu orquestador decide y te responde.';
 const CON_TERMINAL =
-  ' Tu orquestador te da acceso a la terminal para esta tarea. Los comandos corren en un sandbox: pueden leer el proyecto y correr pruebas, pero no escribir archivos ni usar la red. Edita los archivos con tus herramientas de edición, no con comandos. Si un comando falla por el sandbox, no lo reintentes fuera de él (BypassSandbox): se denegará.';
+  ' Tu orquestador te da acceso a la terminal para esta tarea. Los comandos corren en un sandbox: pueden leer el proyecto y correr pruebas, pero no escribir archivos ni usar la red. Edita los archivos con tus herramientas de edición, no con comandos. Si un comando falla por el sandbox, no lo reintentes fuera de él (BypassSandbox): se denegará.' +
+  // Habit Tracker, 2026-11-01: vitest dio EPERM en .vite-temp y Flash dijo igual que había verificado.
+  ' Si un comando falla por el sandbox (EPERM, acceso denegado), no digas que verificaste: di qué falló y pide PERMISO.';
 // Con --add-dir, los comandos arrancan en una carpeta que no se controla (ni el orden ni el directorio de lanzamiento
 // la fijaron el 2026-10-31), casi nunca el proyecto. El prefijo es determinista y la regla de --terminal lo admite.
 const ENTRAR_AL_PROYECTO = (cwd) => ` Tus comandos arrancan en otra carpeta: empieza cada uno exactamente con Set-Location "${cwd}"; y luego el comando, sin git -C ni rutas relativas a otra carpeta.`;
@@ -547,6 +549,8 @@ const POR_NOMBRE = (comandos) =>
   ` Excepción: estos comandos, y solo estos, puedes correrlos con BypassSandbox=true si necesitan escribir o usar la red: ${comandos.join(', ')}. Tras el Set-Location, escríbelos tal cual, sin rutas absolutas, y uno por llamada.`;
 // El historial de la conversación aún dice que tenía terminal: sin este aviso, la pide y vacía su respuesta.
 const SIN_ACCESO_AHORA = ' En esta llamada ya no tienes acceso a la terminal: no ejecutes comandos.';
+// Inti, 2026-11-01: Flash pidió `dir` para comprobar una carpeta antes de crear un archivo y vació su respuesta.
+const ESCRIBE_DIRECTO = ' Crea y edita los archivos directamente con tus herramientas de archivos: las carpetas existen o se crean al escribir. No compruebes nada con comandos.';
 const SIN_RAZONAMIENTO = ' Tu respuesta final es solo el entregable: sin razonamiento, borradores ni notas de lo que vas pensando.';
 
 export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, esfuerzo, conversacion, esquema, addDirs = [], cwd, ajustes, conTerminal = false, terminal = [], accesoRetirado = false }) {
@@ -559,7 +563,7 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, 
     plan:
       ` Es la fase de plan: no crees, modifiques ni borres archivos${conTerminal ? '' : ', ni ejecutes comandos'}. Responde directamente, sin pedir confirmación, con los pasos, los archivos que tocarás y una línea por cada comando o acceso que vas a necesitar: «PERMISO: <comando exacto> — <por qué>».` +
       SIN_RAZONAMIENTO,
-    edicion: '',
+    edicion: conTerminal ? '' : ESCRIBE_DIRECTO,
   };
   const mensaje =
     `Lee el archivo ${encargo} y cumple el encargo que contiene.` +
@@ -919,6 +923,25 @@ function archivosTocados(antes, despues, excluir) {
   return tocados.sort();
 }
 
+// Flash, al editar un archivo CRLF, a veces escribe \r\r\n (Inti, 2026-11-01: el diff marcó 1088 líneas).
+// Solo texto (sin NUL) y archivos razonables: un binario puede tener esos bytes a propósito.
+function corregirCrlfDoble(base, tocados) {
+  const corregidos = [];
+  for (const r of tocados ?? []) {
+    const ruta = join(base, r);
+    try {
+      if (statSync(ruta).size > 5 * 1024 * 1024) continue;
+      const datos = readFileSync(ruta);
+      if (datos.includes(0)) continue;
+      const texto = datos.toString('latin1');
+      if (!texto.includes('\r\r\n')) continue;
+      writeFileSync(ruta, Buffer.from(texto.replace(/\r+\n/g, '\r\n'), 'latin1'));
+      corregidos.push(r);
+    } catch {}
+  }
+  return corregidos;
+}
+
 // --- Salida ---
 
 // agy enlaza los archivos como [nombre](file:///C:/ruta/absoluta#L2): se reemplazan por la ruta relativa,
@@ -1000,6 +1023,7 @@ function imprimir(resumen, formato) {
     const lista = resumen.archivos === null ? 'no se sabe (proyecto sin git y demasiado grande)' : resumen.archivos.join(', ') || 'ninguno';
     lineas.push(`archivos tocados: ${lista}${resumen.sin_git ? ' (sin git: incluye cambios de cualquier proceso)' : ''}`);
   }
+  if (resumen.saltos_corregidos?.length) lineas.push(`saltos de línea corregidos (\\r\\r\\n → \\r\\n): ${resumen.saltos_corregidos.join(', ')}`);
   if (resumen.accesos) lineas.push(`accesos dados: ${resumen.accesos.join(', ')}`);
   if (resumen.comandos?.length) {
     lineas.push(`comandos de agy: ${resumen.comandos.map((c) => c.comando + (c.fuera_del_sandbox ? ' (pidió salir del sandbox)' : '')).join(' | ')}`);
@@ -1042,7 +1066,7 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.6.1';
 
 function archivoIncidencias() {
   return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
@@ -1541,6 +1565,8 @@ async function principal() {
   if (o.modo !== 'edicion' && archivos?.length) {
     marcar('edito_en_lectura', 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.');
   }
+  // En lectura y plan no se toca nada: edito_en_lectura ya avisa.
+  const saltos = o.modo === 'edicion' && antes ? corregirCrlfDoble(antes[0].base, archivos) : [];
   const idConversacion = final.idIntento || opciones.conversacion;
   const comandos = comandosDeAgy(idConversacion, final.inicio);
   registros.at(-1).comandos = comandos.length ? comandos : undefined;
@@ -1597,6 +1623,7 @@ async function principal() {
     tokens: json?.usage?.total_tokens,
     conversacion: final.idIntento || undefined,
     archivos,
+    saltos_corregidos: saltos.length ? saltos : undefined,
     accesos,
     comandos: comandos.length ? comandos : undefined,
     permisos_pedidos: permisosPedidos.length ? permisosPedidos : undefined,

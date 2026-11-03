@@ -115,6 +115,7 @@ que está denegada, y la tarea queda incompleta>
   deja vacía tu respuesta. Trabaja solo con los archivos de la lista.
 - Lee solo los archivos de la lista; no busques otros.
 - No toques archivos fuera de la lista, ni .env, claves, credenciales o datos personales.
+<Si debe crear archivos: «Las carpetas existen: crea los archivos directamente, sin comprobarlas».>
 - No hagas commit, push ni borres archivos.
 <restricciones propias de la tarea>
 
@@ -199,7 +200,7 @@ Agregué multiplicar(a, b) en src/calculo.js y la exporté.
 
 Verifica sin releerlo todo: `git diff --stat` y el diff solo de lo que importa, las pruebas del proyecto, o un vistazo a `resultado.md`. Confía en lo que verificas, no en lo que agy dice que hizo. Lee `respuesta.md` completa solo si el resumen aparece recortado y necesitas el resto.
 
-El tiempo de reloj es el que esperó el usuario; los segundos activos de agy solo cuentan lo que trabajó el modelo. Si el resumen trae `generados por agy fuera del proyecto`, son archivos que agy dejó en su propia carpeta (imágenes, planes), aunque su respuesta diga que no pudo crearlos: cópialos a donde hagan falta.
+El tiempo de reloj es el que esperó el usuario; los segundos activos de agy solo cuentan lo que trabajó el modelo. Si el resumen trae `saltos de línea corregidos`, agy había dejado `\r\r\n` en esos archivos y el script ya los normalizó a `\r\n`: el diff muestra solo los cambios reales. Si el resumen trae `generados por agy fuera del proyecto`, son archivos que agy dejó en su propia carpeta (imágenes, planes), aunque su respuesta diga que no pudo crearlos: cópialos a donde hagan falta.
 
 | Estado | Qué hacer |
 |---|---|
@@ -264,7 +265,7 @@ Para algo que haya que construir y probar, trabaja por turnos en la misma conver
 
 | Lo que agy necesita | Qué haces |
 |---|---|
-| Leer el proyecto, correr pruebas o lint | `--acceso sandbox` |
+| Leer el proyecto, correr pruebas o lint | `--acceso sandbox`. Las pruebas que escriben caché o temporales (vitest, vite, jest) fallan dentro con EPERM: córrelas tú o autoriza ese comando con `--terminal`, y no aceptes un «verificado» de agy sin verlo en `comandos` |
 | Compilar, generar archivos o instalar dependencias | Requiere salir del sandbox. Lee antes lo que va a ejecutar (`package.json`, el script, las dependencias nuevas) y autoriza ese comando con `--terminal` solo en esa llamada, o córrelo tú si prefieres no dárselo |
 | Consultar documentación de un dominio concreto | `--web` si le hace falta; si no, pásale el contenido en un archivo |
 | Hacer commit, push, publicar, desplegar, borrar o tocar servicios externos | Nunca a agy. Es tuyo, y requiere la autorización del usuario que corresponda |

@@ -1216,6 +1216,33 @@ test('con terminal, el mensaje da el prefijo para entrar al proyecto y nombra lo
   assert.doesNotMatch(construirArgs({ ...base, conTerminal: true, ajustes: 'x.json' })[1], /BypassSandbox=true/);
 });
 
+test('edición sin terminal pide escribir directo; con terminal, no inventar una verificación que falló', () => {
+  // Inti y Habit Tracker, 2026-11-01: Flash pidió `dir` antes de crear un archivo, y dio por buena una prueba con EPERM.
+  const base = { encargo: 'C:/x/encargo.md', modelo: 'm', cwd: 'C:/x', modo: 'edicion' };
+  assert.match(construirArgs(base)[1], /No compruebes nada con comandos/);
+  const conTerminal = construirArgs({ ...base, conTerminal: true, ajustes: 'x.json' })[1];
+  assert.doesNotMatch(conTerminal, /No compruebes nada con comandos/);
+  assert.match(conTerminal, /EPERM.*no digas que verificaste/);
+  assert.doesNotMatch(construirArgs({ ...base, modo: 'lectura' })[1], /No compruebes nada con comandos/);
+});
+
+test('agy: en modo edición corrige el \\r\\r\\n que deja agy y lo avisa; los binarios no se tocan', () => {
+  const p = preparar({ git: true });
+  const { resumen } = correr(p, 'crlf_doble', ['--modo', 'edicion']);
+  assert.equal(resumen.estado, 'ok');
+  assert.deepEqual(resumen.saltos_corregidos, ['doble.txt']);
+  assert.equal(readFileSync(join(p.proyecto, 'doble.txt'), 'latin1'), 'uno\r\ndos\r\ntres\r\n');
+  assert.equal(readFileSync(join(p.proyecto, 'bin.dat'), 'latin1'), 'a\0b\r\r\n');
+});
+
+test('agy: en modo lectura no corrige el \\r\\r\\n (edito_en_lectura ya avisa)', () => {
+  const p = preparar({ git: true });
+  const { resumen } = correr(p, 'crlf_doble');
+  assert.equal(resumen.estado, 'edito_en_lectura');
+  assert.equal(resumen.saltos_corregidos, undefined);
+  assert.equal(readFileSync(join(p.proyecto, 'doble.txt'), 'latin1'), 'uno\r\r\ndos\r\r\r\ntres\r\n');
+});
+
 test('modo lectura y plan piden la respuesta sin razonamiento visible; edición no', () => {
   const base = { encargo: 'C:/x/encargo.md', modelo: 'm', cwd: 'C:/x' };
   for (const modo of ['lectura', 'plan']) assert.match(construirArgs({ ...base, modo }).at(2 - 1), /sin razonamiento/);
