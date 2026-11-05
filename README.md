@@ -126,7 +126,7 @@ La gama rápida son las familias Flash; la potente, todas las demás (hoy Gemini
 | `--anotar "<lección>"` | Guarda en el registro central la causa de un fallo y cómo se resolvió |
 | `--incidencias` | Resume en markdown el registro central: qué falla, con qué modelo y qué se aprendió |
 
-Códigos de salida: `0` ok; `2` incompleto (acción denegada o respuesta vacía), parcial (un error que dejó respuesta), archivos editados en una tarea de lectura o un lote con fallos; `3` cuota agotada; `4` secretos en el espacio de trabajo y `1` otros errores (entre ellos `modelo_mudo` y `transitorio`).
+Códigos de salida: `0` ok; `2` incompleto (acción denegada o respuesta vacía), parcial (un error que dejó respuesta), archivos editados por agy en una tarea de lectura o un lote con fallos; `3` cuota agotada; `4` secretos en el espacio de trabajo y `1` otros errores (entre ellos `modelo_mudo` y `transitorio`).
 
 **Las tareas largas no se cortan por tiempo.** Cada 30 s, el script mira la transcripción que agy escribe en vivo, sin gastar tokens y sin interrumpirlo. Solo lo corta si no da ningún paso nuevo en todo el plazo, que empieza según el modelo (de 15 min con `rapido-low` a 45 con `potente`) y crece hasta 3 veces el silencio más largo visto en esa corrida. Si lo corta, conserva la conversación para rescatarla. Mientras tanto, `--estado <carpeta>` dice qué lleva hecho y hace cuánto fue su último paso. No puede decir cuánto falta: una llamada en curso no recibe mensajes, así que al modelo no se le puede preguntar.
 
@@ -136,13 +136,13 @@ La lista de `agy models` tarda unos 12 s, así que el script la guarda unas hora
 
 **Lo que queda guardado:**
 
-- En la carpeta del encargo: `respuesta.md` con la respuesta completa (y `respuesta.json` con `--esquema`), `agy-salida.json` y `agy-errores.txt` de la última ejecución, `historial.jsonl` con una línea por ejecución y, en un lote, `resumen.json`.
+- En la carpeta del encargo: `respuesta.md` con la respuesta completa (y `respuesta.json` con `--esquema`), `respuesta-final.md` (el entregable limpio cuando agy siguió tras un corte por límite de salida), `agy-salida.json` y `agy-errores.txt` de la última ejecución, `historial.jsonl` con una línea por ejecución y, en un lote, `resumen.json`.
 - En `~/.delegar-antigravity/incidencias.jsonl`: un registro central, fuera de tus proyectos, de cada ejecución que no terminó en `ok` y de las lecciones anotadas con `--anotar`. Guarda el estado, el modelo, las acciones denegadas y el texto de error de agy, nunca el encargo ni la respuesta. Sirve para ver qué falla en todos tus proyectos y mejorar la skill. Puedes cambiar la ruta con la variable `DELEGAR_AGY_INCIDENCIAS`.
 
 ## Seguridad y privacidad
 
 - Lo que lee agy se envía a los servidores de Google, y agy puede leer cualquier archivo de su espacio de trabajo aunque el encargo se lo prohíba. La skill no delega datos de pacientes, datos personales, secretos ni credenciales sin tu permiso explícito, y el script se detiene solo si encuentra `.env`, `.dev.vars`, claves o credenciales (también `client_secret*.json`, cuentas de servicio y `.netrc`). Si copias documentos a la carpeta del encargo, el agente te ofrece borrarla al terminar.
-- agy trabaja sin terminal salvo que tu agente le dé acceso para esa llamada, siempre con `--sandbox` y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno. En una de edición, si agy dejó saltos de línea `\r\r\n` en un archivo de texto, el script los corrige y lo avisa. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
+- agy trabaja sin terminal salvo que tu agente le dé acceso para esa llamada, siempre con `--sandbox` y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno (distingue si fue agy o otro proceso según las herramientas que usó). En una de edición, si agy dejó saltos de línea `\r\r\n` en un archivo de texto, el script los corrige y lo avisa. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
 - Cada delegación gasta la cuota de Antigravity, no la de tu agente.
 
 ## Licencia

@@ -1,6 +1,6 @@
 {
   "name": "delegar-antigravity",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "Skill para que un agente delegue subtareas pesadas a Antigravity CLI (agy) y ahorre tokens.",
   "type": "module",

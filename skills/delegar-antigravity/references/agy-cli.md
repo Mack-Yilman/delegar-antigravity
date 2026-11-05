@@ -91,10 +91,11 @@ Comprobado con agy 1.3.3 (2026-10-11 a 15) y 1.4.12 (2026-10-31) en Windows 11, 
 | En una revisión grande, agy gasta todo `--print-timeout` razonando y responde vacío | No le pongas un `--timeout` corto; pide un máximo de hallazgos. Si ya pasó, rescata la conversación con «entrega ya lo que tengas» |
 | Una llamada en curso no recibe mensajes: stdin va cerrado, y `--input-format stream-json` solo encola turnos | No se le puede preguntar cómo va. `brain/<id>/.system_generated/logs/transcript.jsonl` crece paso a paso (comprobado con agy 1.4.12) y su primer paso trae el mensaje; el script lo vigila. Dentro de una llamada larga no crece |
 | `cli-*.log` escribe `FetchConfig failed` cada minuto, aunque el modelo no haga nada | El log no sirve como señal de avance: usa la transcripción |
-| Con `--mode accept-edits`, una vez agy quedó `incompleto` por `read_file` denegado, sin decir qué archivo; en modo lectura, la misma carpeta funcionó (causa sin confirmar) | Da rutas dentro de `--cwd`; si se repite, haz tú la edición |
+| agy busca archivos que el encargo insinúa pero no existen y termina pidiendo uno fuera del espacio de trabajo; la transcripción guarda `file does not exist` y `permission check failed for read_file "<ruta>"` (confirmado el 2026-11-05) | El script da la ruta en `detalle` y pide a agy leer solo lo que nombra el encargo |
 | En modo edición, «guárdalo en esta carpeta» hizo que agy escribiera junto al encargo y no en `--cwd` (2026-10-15) | Nombra la carpeta de destino con su ruta absoluta |
 | agy genera imágenes con un subagente (`generate_image`, que acepta fotos de entrada), pero las guarda en `brain/<conversación>/` como JPG y luego responde que no tiene esa herramienta (2026-10-20) | El script las lista en `generados`; cópialas tú. Con fotos de personas reales altera el rostro aunque el prompt lo prohíba |
 | `duration_seconds` del JSON es tiempo activo del modelo, no de reloj | El script mide el reloj aparte |
+| Con el límite de salida, agy pide al modelo «continúa» y el último paso de la transcripción es el entregable limpio, pero `response` mezcla los dos | El script lo guarda en `respuesta-final.md` |
 
 ## Log y carpeta de cada conversación
 

@@ -1,5 +1,14 @@
 # Historial de versiones
 
+## 0.6.2 — 2026-11-05
+
+Parche con los fallos que aparecieron al usar la 0.6.1 en proyectos reales.
+
+- **Falso `edito_en_lectura`:** en modo lectura o plan, si cambiaron archivos pero la transcripción de agy muestra que solo usó herramientas de lectura, el estado queda en `ok` y el resumen avisa de que los cambió otro proceso. Si usó herramientas de escritura o no se puede leer la transcripción, sigue siendo `edito_en_lectura`. Pasó el 05/11 con Argon en tesis-salud (el cuarto falso positivo).
+- **Lectura denegada y archivos inexistentes:** con `read_file` o `read_url` denegados, el `detalle` da la ruta exacta y cuántos archivos inexistentes buscó antes. Además, el mensaje a agy pide leer solo los archivos nombrados en el encargo y seguir sin ellos si alguno no existe. El 05/11, Flash buscó 5 archivos inexistentes y luego uno fuera del espacio de trabajo, vaciando su respuesta.
+- **Entregable limpio tras corte de salida:** cuando agy agota la salida y continúa, el último paso suele ser el entregable limpio, pero `respuesta.md` mezcla el razonamiento cortado. Ahora el script guarda ese paso en `respuesta-final.md` y el `detalle` de `parcial` lo avisa. Pasó 4 veces con Flash High en revisiones.
+- **Archivos tocados sin repetir:** si el proyecto está dentro de la carpeta del encargo (una copia de trabajo), cada archivo salía dos veces en «archivos tocados». Apareció al corregir esta misma versión con agy.
+
 ## 0.6.1 — 2026-11-02
 
 Parche con los fallos que aparecieron al usar la 0.6.0 en proyectos reales.
