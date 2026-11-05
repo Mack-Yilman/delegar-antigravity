@@ -17,17 +17,21 @@ import {
   construirArgs,
   crearVigilante,
   ejecutar,
+  entregaTrasCorte,
   extraerJson,
   extraerPermisos,
   gama,
+  lecturasDenegadas,
   leerEstado,
   limpiarEnlaces,
   motivoRechazoComando,
+  pasosDeAgy,
   plazoDinamico,
   plazoInicial,
   reglaComando,
   resolverModelo,
   resumirIncidencias,
+  soloLeyo,
   topeDeTiempo,
 } from '../skills/delegar-antigravity/scripts/agy.mjs';
 import { LISTA_1025, LISTA_1110, LISTA_1210, LISTA_FUTURA } from './listas-modelos.mjs';
@@ -1448,4 +1452,84 @@ test('vigilancia: --estado dice cómo va, sin el contenido de los pasos', () => 
   correr(q, 'trabaja_largo', [], { ...SONDEO, FAKE_AGY_PASOS: '4', FAKE_AGY_CADA_MS: '100' });
   const texto = readFileSync(join(q.carpeta, 'progreso.json'), 'utf8');
   assert.doesNotMatch(texto, /CONTENIDO-SECRETO|00000001/);
+});
+
+test('agy: si agy solo leyó, un archivo cambiado por otro proceso no es «edito_en_lectura»', () => {
+  const p = preparar({ git: true });
+  const { codigo, resumen } = correr(p, 'lee_y_otro_edita');
+  assert.equal(codigo, 0);
+  assert.equal(resumen.estado, 'ok');
+  assert.deepEqual(resumen.archivos, ['ajeno.txt']);
+  assert.ok(resumen.avisos?.some((a) => /otro proceso/.test(a)));
+});
+
+test('agy: si la transcripción tiene una herramienta de escritura, sigue siendo «edito_en_lectura»', () => {
+  const p = preparar({ git: true });
+  const { codigo, resumen } = correr(p, 'lee_y_otro_edita', [], { FAKE_AGY_ESCRIBE: '1' });
+  assert.equal(codigo, 2);
+  assert.equal(resumen.estado, 'edito_en_lectura');
+});
+
+test('agy: una lectura denegada da la ruta y cuántos archivos inexistentes buscó', () => {
+  const { resumen } = correr(preparar(), 'lectura_inexistente');
+  assert.equal(resumen.estado, 'incompleto');
+  assert.match(resumen.detalle, /Ruta denegada: C:\/fuera\/package\.json/);
+  assert.match(resumen.detalle, /2 archivos que no existen/);
+});
+
+test('agy: tras un corte por límite de salida, guarda el entregable limpio en respuesta-final.md', () => {
+  const p = preparar();
+  const { resumen } = correr(p, 'salida_larga_sigue');
+  assert.equal(resumen.estado, 'parcial');
+  assert.match(resumen.detalle, /respuesta-final\.md/);
+  assert.equal(resumen.respuesta_final, join(p.carpeta, 'respuesta-final.md'));
+  assert.equal(readFileSync(resumen.respuesta_final, 'utf8'), '## Hallazgos\n1. Uno.\n2. Dos.');
+
+  const sinTranscripcion = correr(preparar(), 'salida_larga');
+  assert.equal(sinTranscripcion.resumen.respuesta_final, undefined);
+  // Una ejecución nueva en la misma carpeta borra el respuesta-final.md de la anterior.
+  correr(p, 'exito');
+  assert.equal(existsSync(join(p.carpeta, 'respuesta-final.md')), false);
+});
+
+test('agy: el respuesta-final.md de otra carpeta de encargo dentro del --cwd no es «edito_en_lectura»', () => {
+  const p = preparar();
+  const otra = join(p.proyecto, 'otro-encargo');
+  mkdirSync(otra);
+  for (const n of ['agy-salida.json', 'respuesta-final.md']) writeFileSync(join(otra, n), 'viejo\n');
+  const { resumen } = correr(p, 'toca_otro_encargo', [], { FAKE_AGY_ARCHIVOS: 'respuesta-final.md' });
+  assert.equal(resumen.estado, 'ok');
+  assert.deepEqual(resumen.archivos, []);
+});
+
+test('pasosDeAgy, soloLeyo, lecturasDenegadas y entregaTrasCorte sin transcripción', () => {
+  assert.equal(pasosDeAgy('', 0), null);
+  assert.equal(pasosDeAgy('no-existe', 0), null);
+  assert.equal(soloLeyo(null), false);
+  assert.equal(soloLeyo([]), true);
+  assert.equal(soloLeyo([{ tool_calls: [{ name: 'edit_file' }] }]), false);
+  assert.deepEqual(lecturasDenegadas(null), { rutas: [], inexistentes: 0 });
+  assert.equal(entregaTrasCorte(null), '');
+  assert.equal(entregaTrasCorte([{ type: 'PLANNER_RESPONSE', content: 'x' }]), '');
+});
+
+test('el mensaje pide leer solo los archivos del encargo en los 3 modos', () => {
+  const base = { encargo: 'C:/x/encargo.md', modelo: 'm', cwd: 'C:/x' };
+  for (const modo of ['lectura', 'plan', 'edicion']) {
+    assert.match(construirArgs({ ...base, modo })[1], /Lee solo los archivos que nombra el encargo/);
+  }
+});
+
+test('agy: con el --cwd dentro de la carpeta del encargo, cada archivo tocado sale una sola vez', () => {
+  // Trabajar sobre una copia dentro de la carpeta del encargo: la foto de esa carpeta también ve el proyecto (05/11).
+  const p = preparar();
+  const copia = join(p.carpeta, 'repo');
+  mkdirSync(copia);
+  writeFileSync(join(copia, 'a.txt'), 'a\n');
+  const g = (...a) => spawnSync('git', a, { cwd: copia });
+  g('init', '-q');
+  g('add', '.');
+  g('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+  const { resumen } = correr(p, 'edita', ['--modo', 'edicion'], {}, { cwd: copia });
+  assert.deepEqual(resumen.archivos, ['nuevo.txt']);
 });

@@ -10,6 +10,7 @@
 //   toca_otro_encargo (reescribe los archivos propios de otra carpeta de encargo dentro del --cwd);
 //   toca_ajustes (reescribe settings.json); pide_permiso (responde con líneas PERMISO:); comandos (deja una transcripción como la real, agy 1.4.12);
 //   denegado_fuera (pidió salir del sandbox, se le denegó y queda vacía la respuesta);
+//   lee_y_otro_edita, lectura_inexistente, salida_larga_sigue;
 //   trabaja_largo (da FAKE_AGY_PASOS pasos, uno cada FAKE_AGY_CADA_MS, con una pausa de FAKE_AGY_PAUSA_MS en el paso
 //   FAKE_AGY_PAUSA_EN, y termina); colgado (da el primer paso y calla; solo ruido en el log, y con FAKE_AGY_MUDO
 //   el «stream idle timeout»).
@@ -65,6 +66,8 @@ const invalido = () => {
   const error = `invalid model selection (--model "${modelo}" --effort ""): model ${modelo} is not recognized as a known model or custom model in settings`;
   salir(fallo(error), 1, `error: ${error}`);
 };
+const ERROR_SALIDA_LARGA =
+  'Your previous response was cut off because it exceeded the output token limit\nPlease continue from where you left off, keeping your response shorter\nRetries remaining: 3';
 
 // Un nombre base (gemini-3.8-flash, con --effort) vale si la lista tiene alguno de sus niveles.
 if (modelo && !lista.includes(modelo) && !lista.some((m) => m.startsWith(`${modelo}-`))) invalido();
@@ -178,7 +181,7 @@ switch (escenario) {
   case 'salida_larga':
   case 'salida_larga_vacia': {
     // Real del 2026-10-22 (Flash High, 10 hallazgos).
-    const error = 'Your previous response was cut off because it exceeded the output token limit\nPlease continue from where you left off, keeping your response shorter\nRetries remaining: 3';
+    const error = ERROR_SALIDA_LARGA;
     salir({ ...fallo(error), response: escenario === 'salida_larga' ? '## Hallazgos\n1. Uno.\n2. Do' : '', duration_seconds: 541 }, 1);
     break;
   }
@@ -218,6 +221,69 @@ switch (escenario) {
       exito('', { denied_actions: [{ action: 'command', display_name: 'RunCommand' }] }),
       0,
       'jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.',
+    );
+    break;
+  }
+  case 'lee_y_otro_edita': {
+    const id = '297fcc3e-19ea-4601-a61a-67a132cb03c1';
+    const dir = join(process.env.DELEGAR_AGY_HOME, 'brain', id, '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const hora = new Date().toISOString();
+    const pasos = [
+      { step_index: 1, type: 'PLANNER_RESPONSE', created_at: hora, tool_calls: [{ name: 'read_file', args: {} }] },
+    ];
+    if (process.env.FAKE_AGY_ESCRIBE) {
+      pasos.push({ step_index: 2, type: 'PLANNER_RESPONSE', created_at: hora, tool_calls: [{ name: 'write_file', args: {} }] });
+    }
+    writeFileSync(join(dir, 'transcript.jsonl'), pasos.map((p) => JSON.stringify(p)).join('\n') + '\n');
+    writeFileSync(join(process.cwd(), 'ajeno.txt'), 'cambiado por otro proceso\n');
+    salir(exito('Revisé.\n'));
+    break;
+  }
+  case 'lectura_inexistente': {
+    const id = '297fcc3e-19ea-4601-a61a-67a132cb03c1';
+    const dir = join(process.env.DELEGAR_AGY_HOME, 'brain', id, '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const hora = new Date().toISOString();
+    const pasos = [
+      { step_index: 1, type: 'PLANNER_RESPONSE', created_at: hora, tool_calls: [{ name: 'read_file', args: {} }] },
+      { type: 'GENERIC', status: 'ERROR', error: 'file does not exist', created_at: hora },
+      { type: 'GENERIC', status: 'ERROR', error: 'file does not exist', created_at: hora },
+      {
+        type: 'GENERIC',
+        status: 'ERROR',
+        error:
+          'permission check failed for read_file "C:/fuera/package.json": user denied permission for read_file(C:/fuera/package.json)\nDo not attempt to circumvent this denial.',
+        created_at: hora,
+      },
+    ];
+    writeFileSync(join(dir, 'transcript.jsonl'), pasos.map((p) => JSON.stringify(p)).join('\n') + '\n');
+    salir(
+      exito('', { denied_actions: [{ action: 'read_file', display_name: 'ReadFile' }] }),
+      0,
+      'jetski: no output produced — a tool required the "read_file" permission that headless mode cannot prompt for, so it was auto-denied.',
+    );
+    break;
+  }
+  case 'salida_larga_sigue': {
+    const id = '297fcc3e-19ea-4601-a61a-67a132cb03c1';
+    const dir = join(process.env.DELEGAR_AGY_HOME, 'brain', id, '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const hora = new Date().toISOString();
+    const pasos = [
+      { type: 'PLANNER_RESPONSE', created_at: hora, content: 'look under the tree, razonamiento cortado' },
+      { type: 'ERROR_MESSAGE', created_at: hora, error: ERROR_SALIDA_LARGA },
+      { type: 'PLANNER_RESPONSE', created_at: hora, content: '## Hallazgos\n1. Uno.\n2. Dos.\n' },
+    ];
+    writeFileSync(join(dir, 'transcript.jsonl'), pasos.map((p) => JSON.stringify(p)).join('\n') + '\n');
+    salir(
+      {
+        ...fallo(ERROR_SALIDA_LARGA),
+        conversation_id: id,
+        response: 'look under the tree, razonamiento cortado## Hallazgos\n1. Uno.\n2. Dos.\n',
+        duration_seconds: 541,
+      },
+      1,
     );
     break;
   }

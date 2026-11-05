@@ -339,16 +339,16 @@ export function extraerPermisos(texto) {
 
 const rutaTranscripcion = (conversacion) => join(carpetaAgy(), 'brain', conversacion, '.system_generated', 'logs', 'transcript.jsonl');
 
-// Lo que agy pidió ejecutar, según su transcripción: el resumen no se fía de lo que dice su respuesta.
-export function comandosDeAgy(conversacion, desde) {
-  if (!conversacion) return [];
+// Los pasos de esta ejecución, según la transcripción de agy; null si no se puede leer (no se sabe qué hizo).
+export function pasosDeAgy(conversacion, desde) {
+  if (!conversacion) return null;
   let texto;
   try {
     texto = readFileSync(rutaTranscripcion(conversacion), 'utf8');
   } catch {
-    return [];
+    return null;
   }
-  const comandos = [];
+  const pasos = [];
   for (const linea of texto.split('\n')) {
     let paso;
     try {
@@ -357,6 +357,51 @@ export function comandosDeAgy(conversacion, desde) {
       continue;
     }
     if (Date.parse(paso.created_at) < desde - 2000) continue;
+    pasos.push(paso);
+  }
+  return pasos;
+}
+
+// Herramientas que no escriben en el proyecto: con solo estas, un cambio de archivos es de otro proceso (05/11: Argon solo leyó y salió «edito_en_lectura»).
+const SOLO_LECTURA = new Set(['read_file', 'view_file', 'finish', 'list_resources', 'read_url_content', 'search_web', 'mcp_sequential-thinking_sequentialthinking']);
+export const soloLeyo = (pasos) => pasos !== null && pasos.every((p) => (p.tool_calls ?? []).every((l) => SOLO_LECTURA.has(l.name)));
+
+export function lecturasDenegadas(pasos) {
+  if (!pasos) return { rutas: [], inexistentes: 0 };
+  const rutas = new Set();
+  let inexistentes = 0;
+  for (const paso of pasos) {
+    if (paso.error === 'file does not exist') inexistentes++;
+    const m = typeof paso.error === 'string' && paso.error.match(/permission check failed for (?:read_file|read_url) "([^"]+)"/);
+    if (m) rutas.add(m[1]);
+  }
+  return { rutas: [...rutas], inexistentes };
+}
+
+export function entregaTrasCorte(pasos) {
+  if (!pasos) return '';
+  let corteIdx = -1;
+  for (let i = 0; i < pasos.length; i++) {
+    const p = pasos[i];
+    if (p.type === 'ERROR_MESSAGE' && (SALIDA_LARGA.test(p.error ?? '') || SALIDA_LARGA.test(p.content ?? ''))) {
+      corteIdx = i;
+    }
+  }
+  if (corteIdx === -1) return '';
+  let posterior = '';
+  for (let i = corteIdx + 1; i < pasos.length; i++) {
+    const p = pasos[i];
+    if (p.type === 'PLANNER_RESPONSE' && p.content?.trim() && (!p.tool_calls || p.tool_calls.length === 0)) {
+      posterior = p.content.trim();
+    }
+  }
+  return posterior;
+}
+
+// Lo que agy pidió ejecutar, según su transcripción: el resumen no se fía de lo que dice su respuesta.
+export function comandosDeAgy(conversacion, desde) {
+  const comandos = [];
+  for (const paso of pasosDeAgy(conversacion, desde) ?? []) {
     for (const llamada of paso.tool_calls ?? []) {
       if (llamada.name !== 'run_command' || !llamada.args?.CommandLine) continue;
       let comando = llamada.args.CommandLine;
@@ -552,6 +597,8 @@ const SIN_ACCESO_AHORA = ' En esta llamada ya no tienes acceso a la terminal: no
 // Inti, 2026-11-01: Flash pidió `dir` para comprobar una carpeta antes de crear un archivo y vació su respuesta.
 const ESCRIBE_DIRECTO = ' Crea y edita los archivos directamente con tus herramientas de archivos: las carpetas existen o se crean al escribir. No compruebes nada con comandos.';
 const SIN_RAZONAMIENTO = ' Tu respuesta final es solo el entregable: sin razonamiento, borradores ni notas de lo que vas pensando.';
+// tesis-salud, 05/11: Flash buscó 5 archivos que no existían y al final uno fuera del espacio de trabajo; la denegación vació su respuesta.
+const SOLO_SUS_ARCHIVOS = ' Lee solo los archivos que nombra el encargo, dentro de estas carpetas. Si uno no existe, sigue sin él y dilo en tu respuesta; no busques otros.';
 
 export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, esfuerzo, conversacion, esquema, addDirs = [], cwd, ajustes, conTerminal = false, terminal = [], accesoRetirado = false }) {
   // --mode plan no impide escribir en modo no interactivo, y a veces prepara un plan en lugar de responder:
@@ -568,6 +615,7 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, 
   const mensaje =
     `Lee el archivo ${encargo} y cumple el encargo que contiene.` +
     POR_MODO[modo] +
+    SOLO_SUS_ARCHIVOS +
     (conTerminal ? CON_TERMINAL + (cwd ? ENTRAR_AL_PROYECTO(cwd) : '') : '') +
     (terminal.length ? POR_NOMBRE(terminal) : '') +
     (accesoRetirado && !conTerminal ? SIN_ACCESO_AHORA : '') +
@@ -788,7 +836,7 @@ export function ejecutar(bin, args, { cwd, salida, errores, limiteMs, matar = ma
 const IGNORADAS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next']);
 const TOPE_ARCHIVOS = 20000;
 // Lo que el script escribe junto al encargo: no son cambios de agy.
-const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'respuesta.json', 'historial.jsonl', 'resumen.json', 'lote-errores.txt', 'agy-permisos.json', 'progreso.json'];
+const PROPIOS = ['agy-salida.json', 'agy-errores.txt', 'respuesta.md', 'respuesta-final.md', 'respuesta.json', 'historial.jsonl', 'resumen.json', 'lote-errores.txt', 'agy-permisos.json', 'progreso.json'];
 // Lo que escribe el orquestador para agy. Editarlo mientras agy trabaja (p. ej., reforzar el encargo de varias
 // tareas en paralelo) daba un falso edito_en_lectura.
 const ENTRADAS = ['encargo.md', 'correccion.md'];
@@ -920,7 +968,8 @@ function archivosTocados(antes, despues, excluir) {
       tocados.push(relative(antes[0].base, absoluta).replace(/\\/g, '/'));
     }
   });
-  return tocados.sort();
+  // Con el --cwd dentro de la carpeta del encargo (una copia de trabajo), las dos fotos ven el mismo archivo (05/11).
+  return [...new Set(tocados)].sort();
 }
 
 // Flash, al editar un archivo CRLF, a veces escribe \r\r\n (Inti, 2026-11-01: el diff marcó 1088 líneas).
@@ -1034,6 +1083,7 @@ function imprimir(resumen, formato) {
   if (resumen.fallos_log?.length) lineas.push(`reintentos internos de agy: ${resumen.fallos_log.join(' | ')}`);
   if (resumen.generados?.length) lineas.push(`generados por agy fuera del proyecto: ${resumen.generados.join(', ')}`);
   if (resumen.respuesta_json) lineas.push(`json: ${resumen.respuesta_json}`);
+  if (resumen.respuesta_final) lineas.push(`respuesta final tras el corte: ${resumen.respuesta_final}`);
   if (resumen.denegado?.length) lineas.push(`denegado: ${resumen.denegado.join(', ')}`);
   if (resumen.secretos?.length) lineas.push(`secretos: ${resumen.secretos.join(', ')}`);
   if (resumen.disponibles?.length) lineas.push(`disponibles: ${resumen.disponibles.join(', ')}`);
@@ -1066,7 +1116,7 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.6.1';
+export const VERSION = '0.6.2';
 
 function archivoIncidencias() {
   return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
@@ -1562,12 +1612,18 @@ async function principal() {
   const despues = fotoArchivos(cwd, extras);
   const excluir = [...PROPIOS, ...ENTRADAS].map((n) => join(carpeta, n)).concat(encargo);
   const archivos = archivosTocados(antes, despues, excluir);
+  let avisoAjenos;
+  const idConversacion = final.idIntento || opciones.conversacion;
+  const pasos = pasosDeAgy(idConversacion, final.inicio);
   if (o.modo !== 'edicion' && archivos?.length) {
-    marcar('edito_en_lectura', 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.');
+    if (soloLeyo(pasos)) {
+      avisoAjenos = `los archivos tocados cambiaron, pero agy no usó herramientas de escritura: los cambió otro proceso (tú, el usuario u otra tarea). Revisa el diff igual.`;
+    } else {
+      marcar('edito_en_lectura', 'agy modificó archivos aunque era una tarea de solo lectura: revisa el diff y revierte lo que no se pidió.');
+    }
   }
   // En lectura y plan no se toca nada: edito_en_lectura ya avisa.
   const saltos = o.modo === 'edicion' && antes ? corregirCrlfDoble(antes[0].base, archivos) : [];
-  const idConversacion = final.idIntento || opciones.conversacion;
   const comandos = comandosDeAgy(idConversacion, final.inicio);
   registros.at(-1).comandos = comandos.length ? comandos : undefined;
   registros.at(-1).accesos = accesos;
@@ -1578,6 +1634,13 @@ async function principal() {
   if (final.denegado?.includes('command') && comandos.length) {
     const ultimo = comandos.at(-1);
     final.detalle += ` Último comando pedido: «${ultimo.comando}»${ultimo.fuera_del_sandbox ? ', fuera del sandbox: reintentó así porque dentro falló; mira por qué falló antes de darle más acceso' : ''}.`;
+  }
+  const { rutas, inexistentes } = lecturasDenegadas(pasos);
+  if ((final.denegado?.includes('read_file') || final.denegado?.includes('read_url')) && rutas.length) {
+    final.detalle += ` Ruta denegada: ${rutas.join(', ')}.`;
+    if (inexistentes > 0) {
+      final.detalle += ` Antes buscó ${inexistentes} archivos que no existen: dile en el encargo cuáles existen y que no busque otros.`;
+    }
   }
   // Una línea por ejecución: agy-salida.json y agy-errores.txt se sobrescriben en cada intento y en cada
   // continuación, y un fallo raro (cuota, cuelgue) no se repite a pedido.
@@ -1633,14 +1696,25 @@ async function principal() {
     denegado: final.denegado,
     detalle: final.detalle,
     disponibles: final.estado === 'modelo_invalido' ? lista.modelos ?? undefined : undefined,
-    avisos: avisos().length ? avisos() : undefined,
+    avisos: avisoAjenos || avisos().length ? [...avisos(), avisoAjenos].filter(Boolean) : undefined,
   };
   const texto = json?.structured_output !== undefined ? JSON.stringify(json.structured_output, null, 2) : json?.response ?? '';
   const completa = join(carpeta, 'respuesta.md');
   const archivoJson = join(carpeta, 'respuesta.json');
+  const respuestaFinal = join(carpeta, 'respuesta-final.md');
   // Una respuesta vieja de otra ejecución no debe pasar por la de esta.
   rmSync(completa, { force: true });
   rmSync(archivoJson, { force: true });
+  rmSync(respuestaFinal, { force: true });
+  if (final.estado === 'parcial') {
+    const tras = entregaTrasCorte(pasos);
+    if (tras) {
+      writeFileSync(respuestaFinal, tras);
+      final.detalle += ' agy siguió tras el corte: el entregable limpio está en respuesta-final.md; respuesta.md mezcla el razonamiento cortado.';
+      resumen.detalle = final.detalle;
+      resumen.respuesta_final = respuestaFinal;
+    }
+  }
   if (opciones.esquema && estructurado !== undefined) {
     writeFileSync(archivoJson, JSON.stringify(estructurado, null, 2) + '\n');
     resumen.respuesta_json = archivoJson;
