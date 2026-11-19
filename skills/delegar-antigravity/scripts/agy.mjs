@@ -3,7 +3,7 @@
 // Node >= 22, sin dependencias. Uso:
 //   node agy.mjs --encargo <archivo.md> [--modelo <alias|slug>] [--modo lectura|plan|edicion] [--cwd <proyecto>]
 //                [--acceso sandbox] [--terminal "<comando>"]... [--web <dominio>]...
-//                [--esfuerzo low|medium|high] [--timeout <s>] [--sin-avance <s>] [--conversacion <id>]
+//                [--esfuerzo low|medium|high|xhigh] [--timeout <s>] [--sin-avance <s>] [--conversacion <id>]
 //                [--esquema <archivo.json>] [--add-dir <carpeta>]... [--respaldo] [--permitir-secretos]
 //                [--refrescar-modelos] [--max-respuesta <n>] [--formato texto|json] [--seco]
 //   node agy.mjs --estado <carpeta del encargo>   (cómo va una ejecución, sin gastar tokens)
@@ -12,7 +12,7 @@
 //   node agy.mjs --modelos [--refrescar-modelos] [--formato texto|json]
 //   node agy.mjs --anotar "<lección: causa y solución>" [--cwd <proyecto>]
 //   node agy.mjs --incidencias [--formato texto|json]
-// Modelos: alias de gama (rapido-low… potente-high), de familia (flash-medium, argon-high) o nombre exacto.
+// Modelos: alias de gama (rapido-low… medio-high… potente-xhigh), de familia (flash-medium, neon-high) o nombre exacto.
 // Registro central: ~/.delegar-antigravity/incidencias.jsonl (o DELEGAR_AGY_INCIDENCIAS). Datos de agy (log/ y
 // brain/): ~/.gemini/antigravity-cli (o DELEGAR_AGY_HOME). Espera antes de reintentar un fallo transitorio:
 // DELEGAR_AGY_ESPERA segundos (60). Cada cuánto mira el avance: DELEGAR_AGY_SONDEO milisegundos (30000).
@@ -43,45 +43,58 @@ import { parseArgs } from 'node:util';
 // fija versiones: lee `agy models` y resuelve alias como «flash-medium» a la versión más alta disponible.
 
 export const MODELO_POR_DEFECTO = 'rapido-medium';
+// xhigh («Extra») no está aquí: un alias sin nivel nunca lo elige, porque es el más caro.
 const PREFERENCIA_SIN_NIVEL = ['medium', 'high', 'low'];
-const NIVELES = ['low', 'medium', 'high'];
+const NIVELES = ['low', 'medium', 'high', 'xhigh'];
+const NIVEL = '(low|medium|high|xhigh)';
 // Gamas de Gemini: las familias cambian de nombre (Pro se fue y llegó Argon), así que la skill elige por gama.
-// Una familia nueva entra sola: es rápida si su nombre lo dice y potente en cualquier otro caso.
+// Una familia nueva entra sola: es rápida si su nombre lo dice, media si es Hydrogen y potente en cualquier otro caso.
 const RAPIDA = /flash|lite|nano/;
-export const gama = (familia) => (RAPIDA.test(familia) ? 'rapido' : 'potente');
-const GAMAS = ['rapido', 'potente'];
+const MEDIA = /hydrogen/;
+export const gama = (familia) => (RAPIDA.test(familia) ? 'rapido' : MEDIA.test(familia) ? 'medio' : 'potente');
+const GAMAS = ['rapido', 'medio', 'potente'];
+// Desempate dentro de una gama con la misma versión (Neon y Argon son Gemini 4): gana la primera.
+const ORDEN_FAMILIA = ['neon', 'argon'];
+// Carbon es solo de Google AI Ultra y el más caro: se usa solo si se pide por nombre (decisión de Mack, 2026-11-12).
+const EXCLUIDAS_DE_GAMA = /carbon/;
 // Familias Gemini que ya existieron: si desaparecen, su alias pasa a su gama (pro-high → potente-high).
-const FAMILIAS_GEMINI = ['flash', 'pro', 'argon'];
+const FAMILIAS_GEMINI = ['flash', 'pro', 'argon', 'hydrogen', 'neon'];
 // Respaldo ante cuota, modelo inexistente, mudo o fallo transitorio: primero las versiones anteriores del mismo
-// modelo y luego, en orden, el mejor de cada gama y nivel vecinos. Solo Gemini: la cuota Claude de Antigravity es
-// más corta y se reserva para cuando se pide. Lo potente no baja a otro nivel potente: el 25/10, Argon High y
-// Medium se quedaron mudos el mismo día.
+// modelo, luego Argon si se pidió algo potente (cuota aparte de Neon) y después, en orden, el mejor de cada gama y
+// nivel vecinos. Solo Gemini: la cuota Claude de Antigravity es más corta y se reserva para cuando se pide.
 export const VECINOS = {
-  'potente-high': ['rapido-high'],
-  'potente-medium': ['rapido-high'],
-  'potente-low': ['rapido-high'],
+  'potente-xhigh': ['potente-high', 'medio-xhigh', 'rapido-high'],
+  'potente-high': ['medio-high', 'rapido-high'],
+  'potente-medium': ['medio-high', 'rapido-high'],
+  'potente-low': ['medio-medium', 'rapido-high'],
+  'medio-xhigh': ['medio-high', 'rapido-high'],
+  'medio-high': ['rapido-high'],
+  'medio-medium': ['rapido-high'],
+  'medio-low': ['rapido-medium'],
+  'rapido-xhigh': ['rapido-high', 'rapido-medium'],
   'rapido-high': ['rapido-medium'],
   'rapido-medium': ['rapido-high', 'rapido-low'],
   'rapido-low': ['rapido-medium'],
 };
-const ALIAS_FIJOS = [...GAMAS.flatMap((g) => NIVELES.map((n) => `${g}-${n}`)), 'pro-high', 'sonnet-low', 'sonnet-medium', 'opus-medium', 'gpt-oss'];
+const ALIAS_FIJOS = [...GAMAS.flatMap((g) => NIVELES.filter((n) => g !== 'rapido' || n !== 'xhigh').map((n) => `${g}-${n}`)), 'pro-high', 'sonnet-low', 'sonnet-medium', 'opus-medium', 'gpt-oss'];
 const HORAS_CACHE = 6;
 
 // gemini-3.8-flash-high, claude-sonnet-5-5-low, gpt-oss-120b-medium.
 export function parsearModelo(slug) {
-  let m = slug.match(/^gemini-(\d+(?:\.\d+)*)-([a-z]+(?:-[a-z]+)*)-(low|medium|high)$/);
+  let m = slug.match(new RegExp(`^gemini-(\\d+(?:\\.\\d+)*)-([a-z]+(?:-[a-z]+)*)-${NIVEL}$`));
   if (m) return { slug, proveedor: 'gemini', familia: m[2], version: m[1].split('.').map(Number), nivel: m[3] };
-  m = slug.match(/^claude-([a-z]+)-(\d+(?:-\d+)*)-(low|medium|high)$/);
+  m = slug.match(new RegExp(`^claude-([a-z]+)-(\\d+(?:-\\d+)*)-${NIVEL}$`));
   if (m) return { slug, proveedor: 'claude', familia: m[1], version: m[2].split('-').map(Number), nivel: m[3] };
-  m = slug.match(/^gpt-oss-(\d+)b-(low|medium|high)$/);
+  m = slug.match(new RegExp(`^gpt-oss-(\\d+)b-${NIVEL}$`));
   if (m) return { slug, proveedor: 'gpt', familia: 'gpt-oss', version: [Number(m[1])], nivel: m[2] };
   return null;
 }
 
 // Un alias no lleva números: «flash-medium», «pro», «sonnet-low», «gpt-oss».
 function parsearAlias(pedido) {
-  if (/\d/.test(pedido)) return null;
-  const m = pedido.match(/^([a-z]+(?:-[a-z]+)*?)(?:-(low|medium|high))?$/);
+  // Un nombre exacto (gemini-pro-orchestrator-neon) no es un alias aunque no lleve números.
+  if (/\d/.test(pedido) || /^(?:gemini|claude)-/.test(pedido)) return null;
+  const m = pedido.match(new RegExp(`^([a-z]+(?:-[a-z]+)*?)(?:-${NIVEL})?$`));
   return m ? { familia: m[1], nivel: m[2] } : null;
 }
 
@@ -100,12 +113,17 @@ function mejor(alias, lista) {
     .filter(
       (p) =>
         p &&
-        (esGama ? p.proveedor === 'gemini' && gama(p.familia) === alias.familia : p.familia === alias.familia) &&
-        (!alias.nivel || p.nivel === alias.nivel),
+        (esGama
+          ? p.proveedor === 'gemini' && gama(p.familia) === alias.familia && !EXCLUIDAS_DE_GAMA.test(p.familia)
+          : p.familia === alias.familia) &&
+        (alias.nivel ? p.nivel === alias.nivel : PREFERENCIA_SIN_NIVEL.includes(p.nivel)),
     );
+  const rango = (lista, x) => (lista.includes(x) ? lista.indexOf(x) : lista.length);
   candidatos.sort(
     (a, b) =>
-      compararVersion(b.version, a.version) || PREFERENCIA_SIN_NIVEL.indexOf(a.nivel) - PREFERENCIA_SIN_NIVEL.indexOf(b.nivel),
+      compararVersion(b.version, a.version) ||
+      rango(ORDEN_FAMILIA, a.familia) - rango(ORDEN_FAMILIA, b.familia) ||
+      PREFERENCIA_SIN_NIVEL.indexOf(a.nivel) - PREFERENCIA_SIN_NIVEL.indexOf(b.nivel),
   );
   return candidatos[0]?.slug ?? null;
 }
@@ -123,10 +141,14 @@ export function resolverModelo(pedido, lista) {
     const otro = mejor(deGama, lista);
     if (otro) return { slug: otro, nota: `sin ${nombre} en agy models: uso ${deGama.familia}-${alias.nivel ?? 'medium'}` };
   }
-  // Sin ningún modelo potente, lo más cercano es el rápido con más razonamiento.
-  if (gama(alias.familia) === 'potente' && (FAMILIAS_GEMINI.includes(alias.familia) || alias.familia === 'potente')) {
+  // Sin ningún modelo potente, lo más cercano es Hydrogen; sin gama media, el rápido con más razonamiento.
+  const deGamaAlta = ['medio', 'potente'].includes(alias.familia);
+  if (gama(alias.familia) !== 'rapido' && (FAMILIAS_GEMINI.includes(alias.familia) || deGamaAlta)) {
+    const sin = deGamaAlta ? `modelos de gama ${alias.familia}` : nombre;
+    const medio = gama(alias.familia) === 'potente' && mejor({ familia: 'medio', nivel: alias.nivel ?? 'high' }, lista);
+    if (medio) return { slug: medio, nota: `sin ${sin} en agy models: uso medio-${alias.nivel ?? 'high'}` };
     const otro = mejor({ familia: 'rapido', nivel: 'high' }, lista);
-    if (otro) return { slug: otro, nota: `sin ${alias.familia === 'potente' ? 'modelos potentes' : nombre} en agy models: uso rapido-high` };
+    if (otro) return { slug: otro, nota: `sin ${sin} en agy models: uso rapido-high` };
   }
   return { slug: null };
 }
@@ -140,6 +162,11 @@ export function cadenaRespaldo(slug, lista) {
     .filter((m) => m.familia === p.familia && m.nivel === p.nivel && compararVersion(m.version, p.version) < 0)
     .sort((a, b) => compararVersion(b.version, a.version))
     .map((m) => m.slug);
+  // Argon tiene su propia cuota: es el primer respaldo de lo potente (decisión de Mack, 2026-11-18).
+  const argon =
+    gama(p.familia) === 'potente' &&
+    (mejor({ familia: 'argon', nivel: p.nivel }, gemini) || (p.nivel === 'xhigh' && mejor({ familia: 'argon', nivel: 'high' }, gemini)));
+  if (argon && argon !== slug && !cadena.includes(argon)) cadena.push(argon);
   for (const vecino of VECINOS[`${gama(p.familia)}-${p.nivel}`] ?? []) {
     const s = mejor(parsearAlias(vecino), gemini);
     if (s && s !== slug && !cadena.includes(s)) cadena.push(s);
@@ -421,10 +448,11 @@ export function comandosDeAgy(conversacion, desde) {
 // una llamada sin terminal no recibe mensajes mientras corre, y mientras razona no puede escribir.
 
 // Plazos sin ningún paso nuevo, en segundos. Mayor silencio sano medido: 11,5 min (Argon); Flash High razonó 15 min.
-const PLAZOS = { 'rapido-low': 900, 'rapido-medium': 1200, 'rapido-high': 1800 };
+// La gama media usa los plazos de la rápida en su nivel; xhigh, los de la potente (Hydrogen xhigh: 28 min activos, 14/11).
+const PLAZOS = { low: 900, medium: 1200, high: 1800 };
 const PLAZO_POTENTE = 2700;
 const PLAZO_DESCONOCIDO = 1800;
-const TOPES = { rapido: 7200, potente: 14400 };
+const TOPES = { rapido: 7200, medio: 7200, potente: 14400 };
 const SILENCIOS_DE_MARGEN = 3;
 
 const nivelGama = (slug) => {
@@ -435,14 +463,18 @@ const nivelGama = (slug) => {
 export function plazoInicial(slug, esfuerzo) {
   const p = nivelGama(slug);
   if (!p) return PLAZO_DESCONOCIDO;
-  return p.gama === 'potente' ? PLAZO_POTENTE : PLAZOS[`rapido-${esfuerzo ?? p.nivel}`] ?? PLAZO_DESCONOCIDO;
+  const nivel = esfuerzo ?? p.nivel;
+  return p.gama === 'potente' || nivel === 'xhigh' ? PLAZO_POTENTE : PLAZOS[nivel] ?? PLAZO_DESCONOCIDO;
 }
 
 // Una tarea con pausas largas (archivos grandes) gana margen sola; una de pasos rápidos conserva el inicial.
 export const plazoDinamico = (inicial, silencioMaximo) => Math.max(inicial, SILENCIOS_DE_MARGEN * silencioMaximo);
 
 // Solo contra un modelo en bucle que gaste cuota: mientras no llegue aquí, una tarea que avanza no se corta.
-export const topeDeTiempo = (slug) => TOPES[nivelGama(slug)?.gama ?? 'rapido'];
+export const topeDeTiempo = (slug) => {
+  const p = nivelGama(slug);
+  return TOPES[p?.nivel === 'xhigh' ? 'potente' : p?.gama ?? 'rapido'];
+};
 
 // agy solo da el id al final. Su primer paso trae el mensaje, que nombra el encargo: la carpeta es única, así que
 // sirve también con encargos en paralelo.
@@ -621,7 +653,7 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, 
     (accesoRetirado && !conTerminal ? SIN_ACCESO_AHORA : '') +
     (conTerminal || ajustes ? PIDE_PERMISO : '');
   // agy rechaza un nivel en el nombre más --effort («conflicts with --effort»): con esfuerzo, va el nombre base.
-  const nombre = esfuerzo ? modelo.replace(/-(low|medium|high)$/, '') : modelo;
+  const nombre = esfuerzo ? modelo.replace(new RegExp(`-${NIVEL}$`), '') : modelo;
   const args = ['-p', mensaje, '--model', nombre, '--mode', MODOS[modo], '--sandbox'];
   args.push('--output-format', 'json', '--print-timeout', `${timeout}s`);
   // El cwd ya es parte del espacio de trabajo: no se repite con --add-dir.
@@ -1116,7 +1148,7 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.6.2';
+export const VERSION = '0.7.0';
 
 function archivoIncidencias() {
   return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
@@ -1664,6 +1696,8 @@ async function principal() {
       segundos_agy: registros.at(-1).segundos_agy,
       tokens: registros.at(-1).tokens,
       denegado: fallido.denegado,
+      // El detalle se recorta a 300 caracteres y el comando quedaba fuera (14/11: Set-Location a otra carpeta).
+      comando_denegado: final.denegado?.includes('command') ? comandos.at(-1)?.comando : undefined,
       accesos,
       fallos_log: registros.flatMap((r) => r.fallos_log ?? []).slice(0, 5).join(' | ') || undefined,
       detalle: final.estado === 'ok' ? undefined : final.detalle?.slice(0, 300),

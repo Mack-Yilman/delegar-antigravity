@@ -39,9 +39,10 @@ Con secretos (`.env`, `.dev.vars`, claves, credenciales), el script se detiene s
 
 Antigravity cambia los modelos sin aviso: un día desaparece Gemini Pro y otro llega una familia nueva (Argon) o una versión nueva, y lo mismo pasa con Claude y GPT. Por eso no elijas por nombre ni por versión: elige por **gama** y **nivel de esfuerzo**, y el script los traduce al mejor modelo que haya hoy.
 
-- **Gama `rapido`:** las familias Flash (y cualquier `lite` o `nano` futura). Para lo mecánico y lo intermedio.
-- **Gama `potente`:** todas las demás familias Gemini (hoy Argon; antes Pro; mañana la que llegue). Para lo complejo.
-- **Nivel:** `low`, `medium` o `high`. Más nivel es más razonamiento, más minutos y más tokens.
+- **Gama `rapido`:** las familias Flash (y cualquier `lite` o `nano` futura). La más barata: para lo mecánico.
+- **Gama `medio`:** Hydrogen. Para el trabajo de agente cotidiano: editar, correr pruebas y comandos, revisiones de criterio. Rinde mucho más que Flash con terminal y cuesta el doble por token.
+- **Gama `potente`:** las demás familias Gemini (hoy Neon, con Argon detrás; mañana la que llegue). Para lo complejo. Nunca elige un modelo solo para planes superiores (Carbon): ese, solo por su nombre.
+- **Nivel:** `low`, `medium`, `high` y, solo en `medio` y `potente`, `xhigh` (el «Extra» de Antigravity). Más nivel es más razonamiento, más minutos y más cuota.
 
 Antes de elegir, si dudas de qué hay hoy, consulta la lista vigente (no gasta tokens; se guarda unas horas y `--refrescar-modelos` la vuelve a pedir):
 
@@ -55,18 +56,22 @@ Muestra los modelos por familia, qué familias hay en cada gama y a qué modelo 
 |---|---|
 | Mecánica y corta: extraer, listar, formatear | `rapido-low` |
 | Mecánica con algo de criterio: resumir, renombrar en varios archivos | `rapido-medium` (por defecto) |
-| Intermedia: borradores, refactorizaciones con criterio, búsquedas con explicación, revisar textos | `rapido-high` |
+| Intermedia sin terminal: borradores, búsquedas con explicación, revisar textos | `rapido-high` |
+| Editar código, correr pruebas o comandos, refactorizaciones con criterio | `medio-medium` |
+| Revisión de criterio de un diff o un plan, depuración con varios pasos | `medio-high` |
 | Compleja pero acotada: un error sutil en pocos archivos, una decisión de diseño | `potente-medium` |
-| La más difícil: arquitectura, auditoría, revisión profunda de un diff | `potente-high` |
+| La más difícil: arquitectura, auditoría, revisión profunda de un diff grande | `potente-high` |
+| Un problema profundo de muchos pasos que ya falló en `high`, o si el usuario lo pide | `medio-xhigh` o `potente-xhigh` |
 | Gemini falló dos veces, o el usuario pide un modelo Claude dentro de agy | `sonnet-low` o `sonnet-medium`, y avisa: gastan una cuota más limitada |
 | Solo si el usuario lo pide | `opus`, `gpt-oss` |
 
-Los alias de familia también valen (`flash-high`, `argon-high`, `pro-high`). Si la familia ya no existe, el script usa su gama con el mismo nivel y el resumen lo dice; sin ningún modelo potente, `potente-*` cae en `rapido-high`.
+Los alias de familia también valen (`flash-high`, `hydrogen-xhigh`, `neon-high`, `argon-high`, `pro-high`), igual que un nombre exacto de la lista. Si la familia ya no existe, el script usa su gama con el mismo nivel y el resumen lo dice; sin ningún modelo potente, `potente-*` pasa a la gama media, y sin gama media, a `rapido-high`.
 
 **Regula el esfuerzo:**
 
 - Empieza por el nivel más bajo que alcance para la tarea. Un nivel alto no compensa un encargo vago: primero aclara el encargo.
-- Si la respuesta quedó superficial (no vio el error, resumió en vez de analizar, dejó puntos sin responder), sube un nivel, o de `rapido-high` a `potente-medium`, en una tarea nueva con el encargo corregido.
+- **`xhigh` no es para todo:** es el nivel más caro y lento. Úsalo solo si la tarea exige razonar muchos pasos seguidos (un error que nadie encontró, un diseño con muchas restricciones) y ya falló en `high`, o si el usuario lo pide. Un alias sin nivel nunca lo elige.
+- Si la respuesta quedó superficial (no vio el error, resumió en vez de analizar, dejó puntos sin responder), sube un nivel, o de gama (`rapido-high` → `medio-high` → `potente-medium`), en una tarea nueva con el encargo corregido.
 - Si dio `sin_avance` o `modelo_mudo`, no subas: acota (menos archivos, funciones nombradas, un máximo de hallazgos) o baja de gama.
 - La gama potente tarda de 5 a más de 20 min y a veces se queda muda: úsala solo cuando el criterio importa más que el tiempo, y siempre con `--respaldo`.
 
@@ -149,7 +154,7 @@ node <carpeta de esta skill>/scripts/agy.mjs --encargo <carpeta>/encargo.md --cw
 - `--acceso sandbox`, `--terminal "<comando>"` y `--web <dominio>` le dan acceso, solo para esa llamada.
 - `--respaldo` reintenta una vez un fallo pasajero de la plataforma y cambia a otro modelo Gemini si hay error de cuota, si el modelo ya no existe o si se quedó mudo. Úsalo salvo que el usuario haya pedido un modelo concreto.
 - `--sin-avance <s>` y `--timeout <s>`: normalmente no los pongas (ver «Tareas largas»).
-- `--esfuerzo low|medium|high` reemplaza el nivel que trae el nombre del modelo.
+- `--esfuerzo low|medium|high|xhigh` reemplaza el nivel que trae el nombre del modelo.
 - `--esquema <archivo.json>` pide una respuesta estructurada: el JSON queda en `respuesta.json`, aunque agy lo haya escrito dentro del texto. Si no trae un JSON válido, el estado es `incompleto`.
 - `--add-dir <carpeta>` da acceso a otra carpeta y `--seco` muestra el comando sin ejecutarlo.
 
@@ -158,8 +163,8 @@ El script cierra la entrada estándar, guarda la salida en archivos, corta el pr
 **Tareas largas.** Deja que agy tome el tiempo que necesite: el script lo vigila por ti, sin gastar tokens y sin interrumpirlo.
 
 - **Ejecútalo en segundo plano** si la tarea puede pasar de un par de minutos y tu entorno lo permite, y sigue con otra cosa. Un comando en primer plano suele tener su propio límite, y al vencer también corta a agy.
-- **No pongas un `--timeout` corto para asegurarte:** es lo que corta trabajo sano. Sin ese flag solo hay un tope contra bucles (2 h en la gama rápida y 4 h en la potente); `--timeout 0` lo quita.
-- **El corte real es la falta de avance:** cada 30 s, el script mira si agy dio algún paso nuevo. El plazo empieza según el modelo (de 15 min con `rapido-low` a 45 con `potente`) y crece hasta 3 veces el silencio más largo visto, así que una tarea con pausas largas gana margen sola. Fíjalo con `--sin-avance <s>` solo si tienes un motivo, y `0` lo desactiva.
+- **No pongas un `--timeout` corto para asegurarte:** es lo que corta trabajo sano. Sin ese flag solo hay un tope contra bucles (2 h en las gamas rápida y media, y 4 h en la potente o con `xhigh`); `--timeout 0` lo quita.
+- **El corte real es la falta de avance:** cada 30 s, el script mira si agy dio algún paso nuevo. El plazo empieza según el modelo (de 15 min con `rapido-low` o `medio-low` a 45 con `potente` o `xhigh`) y crece hasta 3 veces el silencio más largo visto, así que una tarea con pausas largas gana margen sola. Fíjalo con `--sin-avance <s>` solo si tienes un motivo, y `0` lo desactiva.
 - **Para saber cómo va,** si el usuario pregunta o tu entorno no te avisa al terminar (cada unos 15 min basta):
 
 ```bash
@@ -213,7 +218,7 @@ El tiempo de reloj es el que esperó el usuario; los segundos activos de agy sol
 | `parcial` | agy terminó con un error o un corte, pero dejó una respuesta. Si el resumen trae `respuesta_final`, lee ese archivo (`respuesta-final.md`): es el entregable limpio que agy dio tras el corte. Si no, lee `respuesta.md` antes de nada: suele estar completa o casi. Si está cortada, continúa con `--conversacion` pidiendo solo lo que falta; si el detalle habla del límite de salida, pide menos puntos y en formato corto |
 | `sin_avance` | agy no dio ningún paso en todo el plazo y el script lo cortó. Rescátala una vez: escribe `correccion.md` pidiendo que entregue ya lo que tenga, sin leer más, y continúa con `--conversacion`. Si tampoco avanza, no insistas: divide la tarea, acota el entregable o hazla tú |
 | `timeout` | Llegó al tope. Mira los pasos en `progreso.json`: si avanzaba, continúa con `--conversacion` y un `--timeout` mayor; si repetía lo mismo, o si pusiste tú un `--timeout` corto, rescátala una vez como en `sin_avance` o divide la tarea |
-| `modelo_mudo` | El modelo no devolvió nada y agy registró el silencio. **No rescates** (el rescate cae en la misma llamada muda): repite con `--respaldo`, que pasa a la gama rápida, o con otro alias, y acota el encargo. Si ya venía de `--respaldo`, toda la cadena falló: hazla tú o divídela |
+| `modelo_mudo` | El modelo no devolvió nada y agy registró el silencio. **No rescates** (el rescate cae en la misma llamada muda): repite con `--respaldo`, que pasa a Argon y luego a las gamas media y rápida, o con otro alias, y acota el encargo. Si ya venía de `--respaldo`, toda la cadena falló: hazla tú o divídela |
 | `transitorio` | Un fallo pasajero de la plataforma (sin capacidad, error interno, conexión cortada). `--respaldo` ya reintentó y cambió de modelo; sin él, espera un minuto y repite con `--respaldo` |
 | `modelo_invalido` | El modelo no existe hoy: elige otro de `disponibles` o usa un alias |
 | `secretos` | El espacio de trabajo tiene secretos: pregunta al usuario antes de usar `--permitir-secretos` |
@@ -287,7 +292,7 @@ Una revisión de un diff grande o de un proyecto entero es lo que más tarda y m
 - Usa `--respaldo`, ejecútala en segundo plano y pide en el entregable como máximo 6 hallazgos, priorizados y en formato corto: con 10, la respuesta pasó el límite de salida. Flash también lo pasa si escribe su razonamiento en la respuesta: el script ya le pide que no lo haga, pero un diff más corto es lo que más ayuda.
 - Lista solo los archivos que importan; para un diff, guarda el diff en un archivo de la carpeta del encargo y pásale ese archivo.
 - Si el repositorio tiene `CLAUDE.md`, secretos o documentos que agy no debe ver, trabaja sobre una copia: `git archive HEAD` de los archivos que importan, desempaquetada en la carpeta del encargo, más el diff. Usa esa carpeta como `--cwd`.
-- Para una segunda opinión de criterio, `potente-high`; para una revisión mecánica (erratas, consistencia), `rapido-high`.
+- Para una segunda opinión de criterio, `medio-high` (rinde bien y gasta menos) o `potente-high` si el diff es grande o delicado; para una revisión mecánica (erratas, consistencia), `rapido-high`.
 - **Dale el estado actual del código, no solo el diff,** y **verifica cada hallazgo antes de aplicarlo:** en dos revisiones reales, entre 1 de cada 5 y 6 de cada 6 eran falsos u obsoletos. Lee el código señalado y, si el hallazgo depende de una API externa, confírmalo en su documentación. Descarta los falsos y dile al usuario cuántos hubo.
 - **Recalibra la gravedad:** los modelos rápidos tienden a inflarla y marcan una errata o un detalle de estilo como crítico. Asigna tú el nivel antes de informar.
 
