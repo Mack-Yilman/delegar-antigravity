@@ -6,7 +6,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VECINOS, VERSION, resolverModelo } from '../skills/delegar-antigravity/scripts/agy.mjs';
-import { LISTA_1025 } from './listas-modelos.mjs';
+import { LISTA_1025, LISTA_1811 } from './listas-modelos.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const leer = (...ruta) => readFileSync(join(repo, ...ruta), 'utf8').replace(/\r\n/g, '\n');
@@ -98,10 +98,13 @@ test('SKILL.md no fija modelos con versión y sus alias se resuelven con la list
     .filter((l) => l.startsWith('|') && !l.startsWith('|---'))
     .slice(1)
     .flatMap((l) => [...l.split('|')[2].matchAll(/`([^`]+)`/g)].map((m) => m[1]));
-  const sufijo = [...prosa.matchAll(/`([a-z]+(?:-[a-z]+)*-(?:low|medium|high))`/g)].map((m) => m[1]);
+  const sufijo = [...prosa.matchAll(/`([a-z]+(?:-[a-z]+)*-(?:low|medium|high|xhigh))`/g)].map((m) => m[1]);
   const alias = [...new Set([...columna, ...sufijo])];
   assert.ok(columna.length >= 6, `la tabla de modelos de SKILL.md no tiene alias: ${columna}`);
-  for (const a of alias) assert.ok(resolverModelo(a, LISTA_1025).slug, `alias sin resolver con la lista del 25/10: ${a}`);
+  for (const a of alias) {
+    assert.ok(resolverModelo(a, LISTA_1025).slug, `alias sin resolver con la lista del 25/10: ${a}`);
+    assert.ok(resolverModelo(a, LISTA_1811).slug, `alias sin resolver con la lista del 18/11: ${a}`);
+  }
 });
 
 test('la plantilla del encargo prohíbe con fuerza la terminal y la web, y no recorta el entregable de lectura', () => {
@@ -120,7 +123,7 @@ test('la plantilla del encargo prohíbe con fuerza la terminal y la web, y no re
 test('la tabla de respaldo de modelos.md es la del script', () => {
   const modelos = leer('skills', carpetaSkill, 'references', 'modelos.md');
   const tabla = {};
-  for (const [, pedido, cadena] of modelos.matchAll(/^\| `([a-z]+-(?:low|medium|high))` \| (`[^|]+`) \|$/gm)) {
+  for (const [, pedido, cadena] of modelos.matchAll(/^\| `([a-z]+-(?:low|medium|high|xhigh))` \| (`[^|]+`) \|$/gm)) {
     tabla[pedido] = [...cadena.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
   }
   assert.deepEqual(tabla, VECINOS);

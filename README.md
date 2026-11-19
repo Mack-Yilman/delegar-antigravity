@@ -5,7 +5,7 @@ Una skill para que **Claude Code**, o cualquier otro LLM que disponga de una ter
 El agente actúa como orquestador:
 
 1. **Decide si conviene delegar.** Sí para leer o resumir muchos archivos, borradores largos, cambios mecánicos en varios archivos, búsquedas amplias o una segunda opinión. No para tareas pequeñas, datos confidenciales ni acciones que requieren tu autorización.
-2. **Elige el modelo por gama y nivel de esfuerzo,** no por nombre, porque Antigravity cambia los modelos sin aviso: la gama rápida (Gemini Flash) para lo mecánico e intermedio, y la gama potente (hoy Gemini 4 Argon, antes Pro) para lo complejo. El script traduce la gama al mejor modelo de la lista vigente de `agy models`, así que una familia o versión nueva entra sola. Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
+2. **Elige el modelo por gama y nivel de esfuerzo,** no por nombre, porque Antigravity cambia los modelos sin aviso: la gama rápida (Gemini Flash, la más barata) para lo mecánico, la media (Gemini 4 Hydrogen) para editar, correr pruebas y revisar con criterio, y la potente (hoy Gemini 4 Neon, con Argon de respaldo) para lo complejo. El nivel Extra (`xhigh`) solo se usa si la tarea lo exige. El script traduce la gama al mejor modelo de la lista vigente de `agy models`, así que una familia o versión nueva entra sola. Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
 3. **Escribe el encargo** en un archivo fuera de tu repositorio, en una carpeta única que crea el script (así dos sesiones en paralelo nunca comparten carpeta). Por defecto, la plantilla le prohíbe a agy la terminal y la web, porque una sola petición denegada le deja la respuesta vacía.
 4. **Le da solo los accesos que hacen falta,** en cada llamada: agy trabaja como su subagente, le propone un plan y le pide permiso (ver [Terminal bajo control](#terminal-bajo-control)).
 5. **Ejecuta agy** con un script que devuelve un resumen de pocas líneas. La respuesta completa queda en un archivo.
@@ -101,24 +101,27 @@ node skills/delegar-antigravity/scripts/agy.mjs --encargo <carpeta>/encargo.md -
 | Tarea | Alias |
 |---|---|
 | Mecánica: extraer, listar, formatear, resumir | `rapido-low` o `rapido-medium` (por defecto) |
-| Intermedia: borradores, refactorizaciones, revisar textos | `rapido-high` |
+| Intermedia sin terminal: borradores, revisar textos | `rapido-high` |
+| Editar código, correr pruebas o comandos | `medio-medium` |
+| Revisión de criterio de un diff o un plan | `medio-high` |
 | Compleja pero acotada: un error sutil en pocos archivos | `potente-medium` |
 | La más difícil: arquitectura, auditoría, revisión profunda | `potente-high` (de 5 a más de 20 min) |
+| Un problema profundo que ya falló en `high` | `medio-xhigh` o `potente-xhigh` (el más caro) |
 
-La gama rápida son las familias Flash; la potente, todas las demás (hoy Gemini 4 Argon). Una familia o versión nueva entra sola, sin actualizar la skill.
+La gama rápida son las familias Flash; la media, Gemini 4 Hydrogen; la potente, todas las demás (hoy Gemini 4 Neon y, detrás, Argon). Gemini 4 Carbon, solo para Google AI Ultra, nunca se elige por gama: se pide por su nombre. Una familia o versión nueva entra sola, sin actualizar la skill. Los precios y la evidencia de cada modelo están en `references/modelos.md`.
 
 | Opción | Para qué |
 |---|---|
 | `--carpeta <tema>` | Crea en `%TEMP%/delegar-antigravity/` una carpeta de encargo nueva (`<fecha>-<hora>-<tema>`, con sufijo si ya existe) e imprime su ruta |
 | `--modo lectura` / `edicion` | Solo lectura (por defecto) o crear y editar archivos |
 | `--modelos` | Lista los modelos vigentes por familia, qué familias hay en cada gama y a qué modelo se resuelve cada alias hoy |
-| `--modelo <alias o nombre>` | Un alias de gama (`rapido-low`, `rapido-medium`, `rapido-high`, `potente-low`, `potente-medium`, `potente-high`), de familia (`flash-high`, `argon-high`, `sonnet-low`…) o un nombre exacto. Se resuelve a la versión más alta de `agy models`; por defecto `rapido-medium`. Si una familia desaparece, su alias pasa a su gama (hoy `pro-high` usa Argon High) |
-| `--respaldo` | Reintenta una vez un fallo pasajero (sin capacidad, error interno, conexión cortada) y, ante un error de cuota, un modelo que ya no existe o uno que se quedó mudo, prueba otro modelo Gemini |
+| `--modelo <alias o nombre>` | Un alias de gama (`rapido-*`, `medio-*` o `potente-*`, con `low`, `medium`, `high` o `xhigh`), de familia (`flash-high`, `hydrogen-xhigh`, `neon-high`, `sonnet-low`…) o un nombre exacto (también los Orchestrator). Se resuelve a la versión más alta de `agy models`; por defecto `rapido-medium`. Si una familia desaparece, su alias pasa a su gama (hoy `pro-high` usa Neon High) |
+| `--respaldo` | Reintenta una vez un fallo pasajero (sin capacidad, error interno, conexión cortada) y, ante un error de cuota, un modelo que ya no existe o uno que se quedó mudo, prueba otro modelo Gemini (Neon → Argon → Hydrogen → Flash) |
 | `--lote <carpeta>` | Corre cada subcarpeta que tenga `encargo.md`, hasta 5 a la vez (`--paralelo`), y devuelve una tabla |
 | `--esquema <archivo.json>` | Pide una respuesta estructurada; el JSON queda en `respuesta.json` aunque agy lo escriba dentro del texto |
 | `--permitir-secretos` | Ejecuta aunque el espacio de trabajo tenga `.env`, claves o credenciales; el agente solo lo usa con tu permiso |
 | `--conversacion <id>` | Continúa una conversación anterior, para corregir |
-| `--timeout <s>` | Tope contra bucles: sin el flag, 2 h en la gama rápida y 4 h en la potente; `0` lo quita |
+| `--timeout <s>` | Tope contra bucles: sin el flag, 2 h en las gamas rápida y media, y 4 h en la potente o con `xhigh`; `0` lo quita |
 | `--sin-avance <s>` | Corta si no hay pasos nuevos en ese plazo; sin el flag, se adapta a la tarea; `0` lo desactiva |
 | `--estado <carpeta>` | Dice cómo va una ejecución, sin gastar tokens |
 | `--formato json` | Resumen en JSON en lugar de texto |
@@ -128,7 +131,7 @@ La gama rápida son las familias Flash; la potente, todas las demás (hoy Gemini
 
 Códigos de salida: `0` ok; `2` incompleto (acción denegada o respuesta vacía), parcial (un error que dejó respuesta), archivos editados por agy en una tarea de lectura o un lote con fallos; `3` cuota agotada; `4` secretos en el espacio de trabajo y `1` otros errores (entre ellos `modelo_mudo` y `transitorio`).
 
-**Las tareas largas no se cortan por tiempo.** Cada 30 s, el script mira la transcripción que agy escribe en vivo, sin gastar tokens y sin interrumpirlo. Solo lo corta si no da ningún paso nuevo en todo el plazo, que empieza según el modelo (de 15 min con `rapido-low` a 45 con `potente`) y crece hasta 3 veces el silencio más largo visto en esa corrida. Si lo corta, conserva la conversación para rescatarla. Mientras tanto, `--estado <carpeta>` dice qué lleva hecho y hace cuánto fue su último paso. No puede decir cuánto falta: una llamada en curso no recibe mensajes, así que al modelo no se le puede preguntar.
+**Las tareas largas no se cortan por tiempo.** Cada 30 s, el script mira la transcripción que agy escribe en vivo, sin gastar tokens y sin interrumpirlo. Solo lo corta si no da ningún paso nuevo en todo el plazo, que empieza según el modelo (de 15 min con `rapido-low` a 45 con `potente` o `xhigh`) y crece hasta 3 veces el silencio más largo visto en esa corrida. Si lo corta, conserva la conversación para rescatarla. Mientras tanto, `--estado <carpeta>` dice qué lleva hecho y hace cuánto fue su último paso. No puede decir cuánto falta: una llamada en curso no recibe mensajes, así que al modelo no se le puede preguntar.
 
 El script lee además el log que agy deja por cada ejecución en `~/.gemini/antigravity-cli/log/`, porque ahí quedan los reintentos internos que no salen en su salida: así distingue un modelo que se quedó mudo de un simple tiempo agotado. Y avisa si agy dejó archivos en su carpeta `brain/` (imágenes, planes) en lugar del proyecto.
 

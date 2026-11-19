@@ -1,5 +1,17 @@
 # Historial de versiones
 
+## 0.7.0 — 2026-11-18
+
+Llegaron Gemini 4 Neon y Hydrogen, con un nivel nuevo (`xhigh`, el «Extra» de Antigravity). El script los ponía en la misma gama que Argon y no reconocía `xhigh`.
+
+- **Tres gamas:** `rapido` (3.8 Flash, la más barata), `medio` (Hydrogen: editar, correr pruebas y revisar con criterio) y `potente` (Neon y, detrás, Argon). La clasificación sale de la investigación del 18/11: Hydrogen saca 57 % en Terminal-Bench frente al 18 % de Flash, por el doble de precio; Neon es el más capaz del plan Pro.
+- **Nivel `xhigh`:** se reconoce en alias (`medio-xhigh`, `potente-xhigh`, `hydrogen-xhigh`), nombres exactos y `--esfuerzo`. Un alias sin nivel nunca lo elige, y la skill lo reserva para lo que ya falló en `high` o lo que pide el usuario. El 13/11, `hydrogen-xhigh` daba `modelo_invalido`.
+- **Carbon nunca por gama:** es solo de Google AI Ultra; se usa pidiéndolo por su nombre.
+- **Respaldo:** Neon → Argon del mismo nivel (con su propia cuota) → Hydrogen → Flash. La gama media cae en Flash. Si no hay ningún modelo potente, `potente-*` usa Hydrogen antes que Flash.
+- **Nombres exactos sin números:** `gemini-pro-orchestrator-neon` daba `modelo_invalido` porque se leía como alias.
+- **Comando denegado en el registro:** el registro central guarda `comando_denegado`, que el `detalle` recortado perdía. El 14/11, tres encargos con `--terminal` se denegaron porque agy antepuso `Set-Location` a la carpeta del encargo en lugar de la del proyecto.
+- **Texto real de la cuota** («Individual quota reached… Resets in 130h…») y del error de esquema sin `items`, en `references/modelos.md`.
+
 ## 0.6.2 — 2026-11-05
 
 Parche con los fallos que aparecieron al usar la 0.6.1 en proyectos reales.

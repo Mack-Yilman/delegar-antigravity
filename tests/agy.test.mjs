@@ -34,7 +34,7 @@ import {
   soloLeyo,
   topeDeTiempo,
 } from '../skills/delegar-antigravity/scripts/agy.mjs';
-import { LISTA_1025, LISTA_1110, LISTA_1210, LISTA_FUTURA } from './listas-modelos.mjs';
+import { LISTA_1025, LISTA_1110, LISTA_1210, LISTA_1811, LISTA_FUTURA } from './listas-modelos.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const script = join(repo, 'skills', 'delegar-antigravity', 'scripts', 'agy.mjs');
@@ -789,6 +789,90 @@ test('gamas: el modelo por defecto es rapido-medium y --modelos muestra gamas y 
   assert.equal(resumen.alias['potente-high'], 'gemini-4-argon-high');
   assert.equal(resumen.alias['argon-low'], 'gemini-4-argon-low');
   assert.match(resumen.alias['pro-high'], /gemini-4-argon-high.*sin Pro/);
+});
+
+// --- 0.7.0: tres gamas y xhigh (lista real del 18/11) ---
+
+test('0.7.0: Flash es rápido, Hydrogen medio y Neon potente; Argon solo desempata detrás de Neon', () => {
+  assert.equal(gama('hydrogen'), 'medio');
+  assert.equal(gama('neon'), 'potente');
+  const r = (pedido, l = LISTA_1811) => resolverModelo(pedido, l).slug;
+  assert.equal(r('rapido-medium'), 'gemini-3.8-flash-medium');
+  assert.equal(r('medio-high'), 'gemini-4-hydrogen-high');
+  assert.equal(r('potente-high'), 'gemini-4-neon-high');
+  assert.equal(r('pro-high'), 'gemini-4-neon-high');
+  assert.equal(r('argon-high'), 'gemini-4-argon-high');
+  assert.equal(r(MODELO_POR_DEFECTO), 'gemini-3.8-flash-medium');
+});
+
+test('0.7.0: xhigh solo se usa si se pide y se reconoce en alias, nombres y --effort', () => {
+  const r = (pedido) => resolverModelo(pedido, LISTA_1811).slug;
+  assert.equal(r('hydrogen-xhigh'), 'gemini-4-hydrogen-xhigh');
+  assert.equal(r('potente-xhigh'), 'gemini-4-neon-xhigh');
+  assert.equal(r('medio-xhigh'), 'gemini-4-hydrogen-xhigh');
+  // Un alias sin nivel nunca cae en xhigh, aunque sea el único nivel de la familia.
+  assert.equal(r('neon'), 'gemini-4-neon-medium');
+  assert.equal(resolverModelo('neon', ['gemini-4-neon-xhigh']).slug, null);
+  // Sin Flash con xhigh, rapido-xhigh no existe.
+  assert.equal(r('rapido-xhigh'), null);
+  const args = construirArgs({ encargo: 'e.md', modelo: 'gemini-4-hydrogen-xhigh', esfuerzo: 'xhigh' });
+  assert.equal(args[args.indexOf('--model') + 1], 'gemini-4-hydrogen');
+  assert.equal(plazoInicial('gemini-4-hydrogen-xhigh'), 2700);
+  assert.equal(plazoInicial('gemini-4-hydrogen-medium'), 1200);
+  assert.equal(topeDeTiempo('gemini-4-hydrogen-xhigh'), 14400);
+  assert.equal(topeDeTiempo('gemini-4-hydrogen-high'), 7200);
+});
+
+test('0.7.0: Carbon no entra por gama, pero sí por su nombre; los Orchestrator, por su nombre exacto', () => {
+  const conCarbon = ['gemini-5-carbon-high', 'gemini-5-carbon-medium', ...LISTA_1811];
+  assert.equal(resolverModelo('potente-high', conCarbon).slug, 'gemini-4-neon-high');
+  assert.equal(resolverModelo('carbon-high', conCarbon).slug, 'gemini-5-carbon-high');
+  assert.deepEqual(resolverModelo('gemini-pro-orchestrator-neon', LISTA_1811), { slug: 'gemini-pro-orchestrator-neon', disponible: true });
+});
+
+test('0.7.0: el respaldo de Neon es Argon, luego Hydrogen y luego Flash; sin gamas altas, rapido-high', () => {
+  assert.deepEqual(cadenaRespaldo('gemini-4-neon-high', LISTA_1811), ['gemini-4-argon-high', 'gemini-4-hydrogen-high', 'gemini-3.8-flash-high']);
+  assert.deepEqual(cadenaRespaldo('gemini-4-neon-xhigh', LISTA_1811), [
+    'gemini-4-argon-high',
+    'gemini-4-neon-high',
+    'gemini-4-hydrogen-xhigh',
+    'gemini-3.8-flash-high',
+  ]);
+  assert.deepEqual(cadenaRespaldo('gemini-4-hydrogen-high', LISTA_1811), ['gemini-3.8-flash-high']);
+  assert.deepEqual(cadenaRespaldo('gemini-4-argon-high', LISTA_1811), ['gemini-4-hydrogen-high', 'gemini-3.8-flash-high']);
+  for (const pedido of ['medio-medium', 'potente-xhigh', 'hydrogen-high', 'neon-low']) {
+    const r = resolverModelo(pedido, LISTA_1210);
+    assert.equal(r.slug, 'gemini-3.8-flash-high', pedido);
+    assert.match(r.nota, /rapido-high/, pedido);
+  }
+});
+
+test('0.7.0: casos borde de la segunda opinión de Hydrogen', () => {
+  // Sin modelos potentes, lo potente pasa a Hydrogen antes que a Flash.
+  const sinPotentes = ['gemini-4-hydrogen-high', 'gemini-4-hydrogen-low', 'gemini-3.8-flash-high'];
+  assert.equal(resolverModelo('potente-high', sinPotentes).slug, 'gemini-4-hydrogen-high');
+  assert.match(resolverModelo('neon-low', sinPotentes).nota, /medio-low/);
+  // Argon no se repite si ya entró como versión anterior.
+  const argonViejo = ['gemini-4-argon-high', 'gemini-4-hydrogen-high', 'gemini-3.8-flash-high'];
+  assert.deepEqual(cadenaRespaldo('gemini-4.5-argon-high', argonViejo), argonViejo);
+  // Con Argon xhigh, el respaldo de Neon xhigh es Argon xhigh.
+  assert.equal(cadenaRespaldo('gemini-4-neon-xhigh', ['gemini-4-argon-xhigh', 'gemini-4-argon-high'])[0], 'gemini-4-argon-xhigh');
+  // Un nombre exacto vale aunque no haya lista; una familia compuesta con Carbon tampoco entra por gama.
+  assert.deepEqual(resolverModelo('gemini-pro-orchestrator-neon', null), { slug: 'gemini-pro-orchestrator-neon' });
+  assert.equal(resolverModelo('potente-high', ['gemini-5-carbon-pro-high', 'gemini-4-neon-high']).slug, 'gemini-4-neon-high');
+  assert.equal(resolverModelo('gpt-oss', LISTA_1811).slug, 'gpt-oss-120b-medium');
+  assert.deepEqual(cadenaRespaldo('gemini-3.8-flash-xhigh', ['gemini-3.8-flash-high', 'gemini-3.8-flash-medium']), [
+    'gemini-3.8-flash-high',
+    'gemini-3.8-flash-medium',
+  ]);
+});
+
+test('0.7.0: --modelos muestra las tres gamas', () => {
+  const p = preparar();
+  const { resumen } = correr(p, 'exito', ['--modelos'], lista(LISTA_1811), { encargo: null });
+  assert.deepEqual(resumen.gamas, { potente: ['neon', 'argon'], medio: ['hydrogen'], rapido: ['flash'] });
+  assert.equal(resumen.alias['medio-medium'], 'gemini-4-hydrogen-medium');
+  assert.equal(resumen.alias['potente-xhigh'], 'gemini-4-neon-xhigh');
 });
 
 // --- 0.4.0: fallos vistos en el uso real ---
