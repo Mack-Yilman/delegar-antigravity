@@ -3,7 +3,7 @@
 // Node >= 22, sin dependencias. Uso:
 //   node agy.mjs --encargo <archivo.md> [--modelo <alias|slug>] [--modo lectura|plan|edicion] [--cwd <proyecto>]
 //                [--acceso sandbox] [--terminal "<comando>"]... [--web <dominio>]...
-//                [--esfuerzo low|medium|high|xhigh] [--timeout <s>] [--sin-avance <s>] [--conversacion <id>]
+//                [--esfuerzo low|medium|high|xhigh|max] [--timeout <s>] [--sin-avance <s>] [--conversacion <id>]
 //                [--esquema <archivo.json>] [--add-dir <carpeta>]... [--respaldo] [--permitir-secretos]
 //                [--refrescar-modelos] [--max-respuesta <n>] [--formato texto|json] [--seco]
 //   node agy.mjs --estado <carpeta del encargo>   (cómo va una ejecución, sin gastar tokens)
@@ -12,7 +12,12 @@
 //   node agy.mjs --modelos [--refrescar-modelos] [--formato texto|json]
 //   node agy.mjs --anotar "<lección: causa y solución>" [--cwd <proyecto>]
 //   node agy.mjs --incidencias [--formato texto|json]
-// Modelos: alias de gama (rapido-low… medio-high… potente-xhigh), de familia (flash-medium, neon-high) o nombre exacto.
+//   node agy.mjs --cuota     (% real de la cuota de agy, consumo registrado y uso de Claude Code, sin gastar tokens)
+//   node agy.mjs --revisar   (¿hay que actualizar la skill? modelos nuevos, precios, retiros, versión de agy)
+// Modelos: alias de gama (rapido-low, medio-medium… potente-high, maximo-high), orquestador, orquestador-maximo, de
+// familia (hydrogen-high, neon-high, carbon-high) o nombre exacto.
+// Datos propios (consumo.jsonl, cuota.json): ~/.delegar-antigravity (o DELEGAR_AGY_DATOS). Hub de Antigravity:
+// ~/.gemini/antigravity/daemon (o DELEGAR_AGY_HUB_DIR). Fecha de hoy para retiros y precios: DELEGAR_AGY_HOY.
 // Registro central: ~/.delegar-antigravity/incidencias.jsonl (o DELEGAR_AGY_INCIDENCIAS). Datos de agy (log/ y
 // brain/): ~/.gemini/antigravity-cli (o DELEGAR_AGY_HOME). Espera antes de reintentar un fallo transitorio:
 // DELEGAR_AGY_ESPERA segundos (60). Cada cuánto mira el avance: DELEGAR_AGY_SONDEO milisegundos (30000).
@@ -42,33 +47,125 @@ import { parseArgs } from 'node:util';
 // Antigravity cambia los modelos sin aviso (el 12/10 quitó Gemini Pro y Flash 3.6–3.7). Por eso el script no
 // fija versiones: lee `agy models` y resuelve alias como «flash-medium» a la versión más alta disponible.
 
-export const MODELO_POR_DEFECTO = 'rapido-medium';
-// xhigh («Extra») no está aquí: un alias sin nivel nunca lo elige, porque es el más caro.
+// Hydrogen Medium: Google lo describe «para velocidad y eficiencia en tareas de ejecución» (decisión de Mack, 2026-11-24).
+export const MODELO_POR_DEFECTO = 'medio-medium';
+// xhigh («Extra») y max no están aquí: un alias sin nivel nunca los elige, porque son los más caros.
 const PREFERENCIA_SIN_NIVEL = ['medium', 'high', 'low'];
-const NIVELES = ['low', 'medium', 'high', 'xhigh'];
-const NIVEL = '(low|medium|high|xhigh)';
+const NIVELES = ['low', 'medium', 'high', 'xhigh', 'max'];
+const NIVEL = '(low|medium|high|xhigh|max)';
 // Gamas de Gemini: las familias cambian de nombre (Pro se fue y llegó Argon), así que la skill elige por gama.
-// Una familia nueva entra sola: es rápida si su nombre lo dice, media si es Hydrogen y potente en cualquier otro caso.
+// Una familia nueva entra sola: es rápida si su nombre lo dice, media si es Hydrogen, máxima si es Carbon y potente
+// en cualquier otro caso.
 const RAPIDA = /flash|lite|nano/;
 const MEDIA = /hydrogen/;
-export const gama = (familia) => (RAPIDA.test(familia) ? 'rapido' : MEDIA.test(familia) ? 'medio' : 'potente');
-const GAMAS = ['rapido', 'medio', 'potente'];
+const MAXIMA = /carbon/;
+export const gama = (familia) => (RAPIDA.test(familia) ? 'rapido' : MEDIA.test(familia) ? 'medio' : MAXIMA.test(familia) ? 'maximo' : 'potente');
+const GAMAS = ['rapido', 'medio', 'potente', 'maximo'];
+// rapido-* acepta también la gama media: sin un Flash vigente, lo rápido es Hydrogen (Flash se retira el 30/11).
+const GAMAS_DE_ALIAS = { rapido: ['rapido', 'medio'], medio: ['medio'], potente: ['potente'], maximo: ['maximo'] };
+// Si una gama no tiene modelos, baja en este orden; al final, rapido-high.
+const ABAJO = { maximo: ['potente', 'medio'], potente: ['medio'] };
 // Desempate dentro de una gama con la misma versión (Neon y Argon son Gemini 4): gana la primera.
-const ORDEN_FAMILIA = ['neon', 'argon'];
-// Carbon es solo de Google AI Ultra y el más caro: se usa solo si se pide por nombre (decisión de Mack, 2026-11-12).
-const EXCLUIDAS_DE_GAMA = /carbon/;
+const ORDEN_FAMILIA = ['neon'];
 // Familias Gemini que ya existieron: si desaparecen, su alias pasa a su gama (pro-high → potente-high).
-const FAMILIAS_GEMINI = ['flash', 'pro', 'argon', 'hydrogen', 'neon'];
-// Respaldo ante cuota, modelo inexistente, mudo o fallo transitorio: primero las versiones anteriores del mismo
-// modelo, luego Argon si se pidió algo potente (cuota aparte de Neon) y después, en orden, el mejor de cada gama y
-// nivel vecinos. Solo Gemini: la cuota Claude de Antigravity es más corta y se reserva para cuando se pide.
+const FAMILIAS_GEMINI = ['flash', 'pro', 'argon', 'hydrogen', 'neon', 'carbon'];
+// Orchestrator: Neon o Carbon planifican y Hydrogen ejecuta lo rutinario, con un esfuerzo fijo y sin nivel en el nombre.
+export const ORQUESTADORES = { orquestador: 'gemini-pro-orchestrator-neon', 'orquestador-maximo': 'gemini-pro-orchestrator' };
+// Retiros anunciados por Google (insignia «Leaving Soon»). Desde la fecha, el script los quita de la lista aunque agy
+// aún los liste; antes, ninguna gama los elige si hay otro modelo y solo valen por su nombre exacto. Los que Google
+// anuncie después se leen del hub local (leerEtiquetas) y se suman solos.
+export const RETIROS = {
+  'gemini-3.8-flash-': '2026-11-30',
+  'gemini-4-argon-': '2026-11-30',
+  'gemini-pro-orchestrator-argon': '2026-11-30',
+  'gpt-oss-': '2026-11-30',
+};
+let retirosVivos = {};
+export const retiro = (slug) =>
+  retirosVivos[slug] ?? Object.entries(RETIROS).find(([prefijo]) => slug === prefijo || slug.startsWith(prefijo))?.[1] ?? null;
+
+// Fecha local AAAA-MM-DD (toISOString da UTC: en Lima, después de las 19:00 ya es mañana).
+export function hoy() {
+  if (process.env.DELEGAR_AGY_HOY) return process.env.DELEGAR_AGY_HOY;
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+export const retirado = (slug, dia = hoy()) => {
+  const fecha = retiro(slug);
+  return Boolean(fecha) && dia >= fecha;
+};
+
+// USD por millón de tokens, tier estándar de la API de Gemini (aistudio.google.com/docs/pricing, leído el 24/11/2026).
+// La cuota de Antigravity se gasta en proporción a este costo («Quota is consumed proportionally to the cost of the
+// tokens», RetrieveUserQuotaSummary). Un tramo con «hasta» vale hasta ese día incluido; el último, desde entonces.
+// Un cambio de precio es una línea más aquí.
+export const PRECIOS = {
+  hydrogen: [{ entrada: 1.5, salida: 7.5, cache: 0.075 }],
+  neon: [{ entrada: 3, salida: 15, cache: 0.15 }],
+  carbon: [{ hasta: '2026-11-30', entrada: 2, salida: 10, cache: 0.1 }, { entrada: 4, salida: 20, cache: 0.2 }],
+  argon: [{ hasta: '2026-11-30', entrada: 2, salida: 10, cache: 0.1 }, { entrada: 4, salida: 20, cache: 0.2 }],
+  flash: [{ hasta: '2026-12-31', entrada: 0.75, salida: 3.75, cache: 0.075 }, { entrada: 1.5, salida: 7.5, cache: 0.15 }],
+};
+// El Orchestrator mezcla su modelo con Hydrogen: se cuenta al precio del que planifica (cota superior).
+export function familiaDePrecio(slug) {
+  const p = parsearModelo(slug);
+  if (p) return p.proveedor === 'gemini' ? p.familia : null;
+  const m = slug.match(/^gemini-pro-orchestrator(?:-([a-z]+))?$/);
+  return m ? (m[1] ?? 'carbon') : null;
+}
+export function precio(slug, dia = hoy()) {
+  const tramos = PRECIOS[familiaDePrecio(slug) ?? ''];
+  return tramos?.find((t) => !t.hasta || dia <= t.hasta) ?? null;
+}
+// Costo equivalente de una ejecución según `usage` de agy. El razonamiento se cobra como salida.
+export function costoUsd(slug, usage, dia = hoy()) {
+  const p = precio(slug, dia);
+  if (!p || !usage) return null;
+  const cache = usage.cache_read_tokens ?? 0;
+  const entrada = Math.max(0, (usage.input_tokens ?? 0) - cache);
+  const salida = (usage.output_tokens ?? 0) + (usage.thinking_tokens ?? 0);
+  return Math.round(((entrada * p.entrada + cache * p.cache + salida * p.salida) / 1e6) * 10000) / 10000;
+}
+// Cambios de precio y retiros de los próximos días, para avisar antes de que pasen.
+export function fechasProximas(dias, dia = hoy()) {
+  const limite = new Date(`${dia}T00:00:00`);
+  limite.setDate(limite.getDate() + dias);
+  const tope = `${limite.getFullYear()}-${String(limite.getMonth() + 1).padStart(2, '0')}-${String(limite.getDate()).padStart(2, '0')}`;
+  const eventos = [];
+  for (const [familia, tramos] of Object.entries(PRECIOS)) {
+    tramos.forEach((t, i) => {
+      const siguiente = tramos[i + 1];
+      if (!t.hasta || !siguiente) return;
+      const desde = new Date(`${t.hasta}T00:00:00`);
+      desde.setDate(desde.getDate() + 1);
+      const fecha = `${desde.getFullYear()}-${String(desde.getMonth() + 1).padStart(2, '0')}-${String(desde.getDate()).padStart(2, '0')}`;
+      if (fecha > dia && fecha <= tope) eventos.push(`${fecha}: ${familia} pasa de ${t.entrada}/${t.salida} a ${siguiente.entrada}/${siguiente.salida} USD por millón`);
+    });
+  }
+  // Los anunciados por Google que ya cubre RETIROS no se repiten.
+  const vivos = Object.entries(retirosVivos).filter(([slug]) => !Object.keys(RETIROS).some((p) => slug === p || slug.startsWith(p)));
+  const retiros = [...Object.entries(RETIROS).map(([k, v]) => [k.replace(/-$/, ''), v]), ...vivos];
+  const porFecha = {};
+  for (const [nombre, fecha] of retiros) if (fecha >= dia && fecha <= tope) (porFecha[fecha] ??= new Set()).add(nombre.replace(/-(low|medium|high|xhigh|max)$/, ''));
+  for (const [fecha, nombres] of Object.entries(porFecha)) eventos.push(`${fecha}: se retiran ${[...nombres].join(', ')}`);
+  return eventos.sort();
+}
+
+// Respaldo ante modelo inexistente, mudo o fallo transitorio: primero las versiones anteriores del mismo modelo y
+// después, en orden, el mejor de cada gama y nivel vecinos. Nunca ante cuota: desde el 24/11 todos los Gemini comparten
+// una cuota (RetrieveUserQuotaSummary), así que cambiar de Gemini no sirve. Nunca sube a Carbon. Solo Gemini: la cuota
+// Claude de Antigravity es aparte y se reserva para cuando se pide.
 export const VECINOS = {
+  'maximo-high': ['potente-high', 'medio-high'],
+  'maximo-medium': ['potente-medium', 'medio-high'],
+  'maximo-low': ['potente-low', 'medio-medium'],
   'potente-xhigh': ['potente-high', 'medio-xhigh', 'rapido-high'],
   'potente-high': ['medio-high', 'rapido-high'],
   'potente-medium': ['medio-high', 'rapido-high'],
   'potente-low': ['medio-medium', 'rapido-high'],
   'medio-xhigh': ['medio-high', 'rapido-high'],
-  'medio-high': ['rapido-high'],
+  // Sin Flash, rapido-high también es Hydrogen High: Medium es su único respaldo de la misma cuota y costo.
+  'medio-high': ['rapido-high', 'medio-medium'],
   'medio-medium': ['rapido-high'],
   'medio-low': ['rapido-medium'],
   'rapido-xhigh': ['rapido-high', 'rapido-medium'],
@@ -76,7 +173,17 @@ export const VECINOS = {
   'rapido-medium': ['rapido-high', 'rapido-low'],
   'rapido-low': ['rapido-medium'],
 };
-const ALIAS_FIJOS = [...GAMAS.flatMap((g) => NIVELES.filter((n) => g !== 'rapido' || n !== 'xhigh').map((n) => `${g}-${n}`)), 'pro-high', 'sonnet-low', 'sonnet-medium', 'opus-medium', 'gpt-oss'];
+const ALIAS_FIJOS = [
+  ...['low', 'medium', 'high'].flatMap((n) => GAMAS.map((g) => `${g}-${n}`)),
+  'medio-xhigh',
+  'potente-xhigh',
+  ...Object.keys(ORQUESTADORES),
+  'pro-high',
+  'sonnet-low',
+  'sonnet-medium',
+  'opus-medium',
+  'gpt-oss',
+];
 const HORAS_CACHE = 6;
 
 // gemini-3.8-flash-high, claude-sonnet-5-5-low, gpt-oss-120b-medium.
@@ -107,20 +214,22 @@ function compararVersion(a, b) {
 }
 
 function mejor(alias, lista) {
-  const esGama = GAMAS.includes(alias.familia);
+  // rapido-xhigh no sube a Hydrogen xhigh: xhigh se usa solo si se pide por su alias.
+  const gamas = alias.familia === 'rapido' && alias.nivel === 'xhigh' ? ['rapido'] : GAMAS_DE_ALIAS[alias.familia];
   const candidatos = lista
     .map(parsearModelo)
     .filter(
       (p) =>
         p &&
-        (esGama
-          ? p.proveedor === 'gemini' && gama(p.familia) === alias.familia && !EXCLUIDAS_DE_GAMA.test(p.familia)
-          : p.familia === alias.familia) &&
+        (gamas ? p.proveedor === 'gemini' && gamas.includes(gama(p.familia)) : p.familia === alias.familia) &&
         (alias.nivel ? p.nivel === alias.nivel : PREFERENCIA_SIN_NIVEL.includes(p.nivel)),
     );
   const rango = (lista, x) => (lista.includes(x) ? lista.indexOf(x) : lista.length);
+  // Una familia que se retira va al final: se usa solo si no hay otra. Dentro de una familia manda la versión.
   candidatos.sort(
     (a, b) =>
+      (a.familia !== b.familia && Number(Boolean(retiro(a.slug))) - Number(Boolean(retiro(b.slug)))) ||
+      (gamas ? gamas.indexOf(gama(a.familia)) - gamas.indexOf(gama(b.familia)) : 0) ||
       compararVersion(b.version, a.version) ||
       rango(ORDEN_FAMILIA, a.familia) - rango(ORDEN_FAMILIA, b.familia) ||
       PREFERENCIA_SIN_NIVEL.indexOf(a.nivel) - PREFERENCIA_SIN_NIVEL.indexOf(b.nivel),
@@ -129,26 +238,46 @@ function mejor(alias, lista) {
 }
 
 export function resolverModelo(pedido, lista) {
+  if (ORQUESTADORES[pedido]) {
+    const slug = ORQUESTADORES[pedido];
+    return lista ? { slug, disponible: lista.includes(slug) } : { slug };
+  }
   const alias = parsearAlias(pedido);
   if (!alias) return lista ? { slug: pedido, disponible: lista.includes(pedido) } : { slug: pedido };
   if (!lista) return { slug: null };
-  const elegido = mejor(alias, lista);
-  if (elegido) return { slug: elegido };
   const nombre = alias.familia[0].toUpperCase() + alias.familia.slice(1);
+  const nivel = alias.nivel ?? 'medium';
+  const elegido = mejor(alias, lista);
+  // Una familia que se retira (flash-*, argon-*) pasa a su gama si allí hay otro modelo (decisión de Mack, 2026-11-24).
+  if (elegido && retiro(elegido) && FAMILIAS_GEMINI.includes(alias.familia)) {
+    const otro = mejor({ familia: gama(alias.familia), nivel: alias.nivel }, lista);
+    if (otro && !retiro(otro)) return { slug: otro, nota: `${nombre} se retira el ${retiro(elegido)}: uso ${gama(alias.familia)}-${nivel}` };
+  }
+  if (elegido) return { slug: elegido };
   // Una familia Gemini que desapareció pasa a su gama, con el mismo nivel.
   if (FAMILIAS_GEMINI.includes(alias.familia)) {
-    const deGama = { familia: gama(alias.familia), nivel: alias.nivel };
-    const otro = mejor(deGama, lista);
-    if (otro) return { slug: otro, nota: `sin ${nombre} en agy models: uso ${deGama.familia}-${alias.nivel ?? 'medium'}` };
+    const otro = mejor({ familia: gama(alias.familia), nivel: alias.nivel }, lista);
+    if (otro) return { slug: otro, nota: `sin ${nombre} en agy models: uso ${gama(alias.familia)}-${nivel}` };
   }
-  // Sin ningún modelo potente, lo más cercano es Hydrogen; sin gama media, el rápido con más razonamiento.
-  const deGamaAlta = ['medio', 'potente'].includes(alias.familia);
-  if (gama(alias.familia) !== 'rapido' && (FAMILIAS_GEMINI.includes(alias.familia) || deGamaAlta)) {
-    const sin = deGamaAlta ? `modelos de gama ${alias.familia}` : nombre;
-    const medio = gama(alias.familia) === 'potente' && mejor({ familia: 'medio', nivel: alias.nivel ?? 'high' }, lista);
-    if (medio) return { slug: medio, nota: `sin ${sin} en agy models: uso medio-${alias.nivel ?? 'high'}` };
-    const otro = mejor({ familia: 'rapido', nivel: 'high' }, lista);
-    if (otro) return { slug: otro, nota: `sin ${sin} en agy models: uso rapido-high` };
+  // Una gama sin modelos baja de gama: Carbon → Neon con el mismo nivel → Hydrogen (High si no se dio nivel) →
+  // rapido-high. Sin Hydrogen, medio-* usa el rápido del mismo nivel.
+  const desde = GAMAS.includes(alias.familia) ? alias.familia : FAMILIAS_GEMINI.includes(alias.familia) ? gama(alias.familia) : null;
+  if (desde && desde !== 'rapido') {
+    const sin = GAMAS.includes(alias.familia) ? `modelos de gama ${alias.familia}` : nombre;
+    const extremo = ['xhigh', 'max'].includes(alias.nivel);
+    const pasos =
+      desde === 'medio'
+        ? [...(extremo ? [['medio', 'high']] : []), ['rapido', extremo ? 'high' : alias.nivel]]
+        : [
+            // Un nivel que la gama no tiene (Carbon no trae xhigh) baja primero a High en la misma gama.
+            ...(extremo ? [[desde, 'high']] : []),
+            ...ABAJO[desde].map((g) => [g, g === 'medio' ? (alias.nivel ?? 'high') : alias.nivel]),
+            ['rapido', 'high'],
+          ];
+    for (const [otra, n] of pasos) {
+      const s = mejor({ familia: otra, nivel: n }, lista);
+      if (s) return { slug: s, nota: `sin ${sin} en agy models: uso ${otra}-${n ?? 'medium'}` };
+    }
   }
   return { slug: null };
 }
@@ -162,11 +291,6 @@ export function cadenaRespaldo(slug, lista) {
     .filter((m) => m.familia === p.familia && m.nivel === p.nivel && compararVersion(m.version, p.version) < 0)
     .sort((a, b) => compararVersion(b.version, a.version))
     .map((m) => m.slug);
-  // Argon tiene su propia cuota: es el primer respaldo de lo potente (decisión de Mack, 2026-11-18).
-  const argon =
-    gama(p.familia) === 'potente' &&
-    (mejor({ familia: 'argon', nivel: p.nivel }, gemini) || (p.nivel === 'xhigh' && mejor({ familia: 'argon', nivel: 'high' }, gemini)));
-  if (argon && argon !== slug && !cadena.includes(argon)) cadena.push(argon);
   for (const vecino of VECINOS[`${gama(p.familia)}-${p.nivel}`] ?? []) {
     const s = mejor(parsearAlias(vecino), gemini);
     if (s && s !== slug && !cadena.includes(s)) cadena.push(s);
@@ -187,8 +311,18 @@ function fechaLocal(ms) {
   return `${d.getFullYear()}-${dos(d.getMonth() + 1)}-${dos(d.getDate())} ${dos(d.getHours())}:${dos(d.getMinutes())}`;
 }
 
+// La lista sin lo retirado a la fecha (aunque agy aún lo liste) y con los retiros que anunció Google.
+async function obtenerModelos(bin, opciones) {
+  const r = await listaDeAgy(bin, opciones);
+  retirosVivos = Object.fromEntries(Object.entries(r.etiquetas ?? {}).flatMap(([slug, e]) => (e.retiro ? [[slug, e.retiro]] : [])));
+  if (!r.modelos) return r;
+  const retirados = r.modelos.filter((m) => retirado(m));
+  return { ...r, modelos: r.modelos.filter((m) => !retirado(m)), retirados: retirados.length ? retirados : undefined };
+}
+
 // `agy models` tarda unos 12 s y no gasta tokens: se guarda unas horas y se refresca si agy rechaza un modelo.
-async function obtenerModelos(bin, { refrescar = false } = {}) {
+// Junto con la lista se guardan las etiquetas de Google (rol y retiro de cada modelo), si el hub responde.
+async function listaDeAgy(bin, { refrescar = false } = {}) {
   const carpeta = process.env.DELEGAR_AGY_CACHE || join(tmpdir(), 'delegar-antigravity');
   mkdirSync(carpeta, { recursive: true });
   const archivo = join(carpeta, 'modelos.json');
@@ -198,7 +332,7 @@ async function obtenerModelos(bin, { refrescar = false } = {}) {
     if (cache.bin !== bin || !Array.isArray(cache.modelos) || !cache.modelos.length) cache = null;
   } catch {}
   if (cache && !refrescar && Date.now() - cache.fecha < HORAS_CACHE * 3600e3) {
-    return { modelos: cache.modelos, fecha: cache.fecha, origen: 'caché' };
+    return { modelos: cache.modelos, fecha: cache.fecha, origen: 'caché', etiquetas: cache.etiquetas };
   }
   const salida = join(carpeta, `agy-models-${process.pid}.txt`);
   const errores = join(carpeta, `agy-models-${process.pid}-errores.txt`);
@@ -209,25 +343,145 @@ async function obtenerModelos(bin, { refrescar = false } = {}) {
   rmSync(errores, { force: true });
   if (modelos.length) {
     const fecha = Date.now();
+    const etiquetas = (await leerEtiquetas()) ?? cache?.etiquetas;
     const temporal = `${archivo}.${process.pid}`;
     // Con varias delegaciones en paralelo, Windows puede negar el reemplazo (EPERM, EBUSY): la caché es opcional.
     try {
-      writeFileSync(temporal, JSON.stringify({ bin, fecha, modelos }));
+      writeFileSync(temporal, JSON.stringify({ bin, fecha, modelos, etiquetas }));
       renameSync(temporal, archivo);
     } catch {
       rmSync(temporal, { force: true });
     }
-    return { modelos, fecha, origen: 'agy models' };
+    return { modelos, fecha, origen: 'agy models', etiquetas };
   }
   if (cache) {
     return {
       modelos: cache.modelos,
       fecha: cache.fecha,
       origen: 'caché',
+      etiquetas: cache.etiquetas,
       aviso: `agy models falló (${problema}); uso la lista guardada del ${fechaLocal(cache.fecha)}.`,
     };
   }
   return { modelos: null, aviso: `agy models falló (${problema}): sin lista de modelos, solo valen nombres exactos.` };
+}
+
+// --- Cuota y etiquetas del hub de Antigravity ---
+// La app y el IDE de Antigravity abren un hub de agy que responde en 127.0.0.1 con un token CSRF guardado en
+// ~/.gemini/antigravity/daemon/hub_<puerto>.json (Mack autorizó leerlo, 2026-11-24). No está documentado: si cambia,
+// estas funciones devuelven null y la skill sigue igual. El token nunca se imprime ni se guarda.
+const carpetaHub = () => process.env.DELEGAR_AGY_HUB_DIR || join(homedir(), '.gemini', 'antigravity', 'daemon');
+export const carpetaDatos = () => process.env.DELEGAR_AGY_DATOS || join(homedir(), '.delegar-antigravity');
+
+function vivo(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+async function llamarHub(metodo, cuerpo = {}) {
+  let archivos;
+  try {
+    const dir = carpetaHub();
+    archivos = readdirSync(dir)
+      .filter((n) => /^hub_\d+\.json$/.test(n))
+      .map((n) => ({ ruta: join(dir, n), fecha: statSync(join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.fecha - a.fecha);
+  } catch {
+    return null;
+  }
+  // Quedan archivos de hubs cerrados (191 el 24/11) y el PID se reutiliza: se prueba del más nuevo al más viejo.
+  for (const { ruta } of archivos.slice(0, 10)) {
+    let hub;
+    try {
+      hub = JSON.parse(readFileSync(ruta, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!hub.httpPort || !hub.csrfToken || !vivo(hub.pid)) continue;
+    try {
+      const r = await fetch(`http://127.0.0.1:${hub.httpPort}/exa.language_server_pb.LanguageServerService/${metodo}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': hub.csrfToken },
+        body: JSON.stringify(cuerpo),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) return await r.json();
+    } catch {}
+  }
+  return null;
+}
+
+// % usado de cada grupo y ventana. Desde el 24/11 hay dos grupos («Gemini Models», con todos los Gemini, y «Claude and
+// GPT models»), cada uno con un límite de 5 h y uno semanal. forceRefresh: sin él, el hub devuelve una lectura vieja.
+export async function leerCuota() {
+  const j = await llamarHub('RetrieveUserQuotaSummary', { forceRefresh: true });
+  const grupos = j?.response?.groups;
+  if (!Array.isArray(grupos)) return null;
+  const ventana = (w) => (w === 'weekly' ? 'semana' : w);
+  const cuota = {
+    fecha: Date.now(),
+    grupos: grupos.map((g) => ({
+      grupo: g.displayName,
+      ventanas: Object.fromEntries(
+        // proto3 omite los ceros: sin remainingFraction, la ventana está agotada.
+        (g.buckets ?? []).map((b) => [ventana(b.window), { usado: Math.round((1 - (b.remainingFraction ?? 0)) * 1e6) / 1e4, reinicio: b.resetTime }]),
+      ),
+    })),
+  };
+  try {
+    mkdirSync(carpetaDatos(), { recursive: true });
+    writeFileSync(join(carpetaDatos(), 'cuota.json'), JSON.stringify(cuota) + '\n');
+  } catch {}
+  return cuota;
+}
+
+const MESES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+// «Leaving on Nov 30.» o «will be removed from Antigravity on November 30, 2026.»
+export function fechaDeRetiro(texto, dia = hoy()) {
+  const m = (texto ?? '').match(/(?:leaving|removed)\b[^.]*?\bon\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,\s*(\d{4}))?/i);
+  const mes = m && MESES.indexOf(m[1].toLowerCase());
+  if (!m || mes < 0) return null;
+  const fecha = (anio) => `${anio}-${String(mes + 1).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  if (m[3]) return fecha(m[3]);
+  // Sin año: «Leaving on Jan 15» leído en diciembre es del año siguiente. Un retiro de hace menos de 60 días, de este.
+  const esteAnio = fecha(dia.slice(0, 4));
+  return diasEntre(esteAnio, dia) > 60 ? fecha(Number(dia.slice(0, 4)) + 1) : esteAnio;
+}
+
+// Rol y retiro de cada modelo, como los muestra Antigravity. GetUserStatus trae también el nombre y el correo del
+// usuario: solo se toman estos tres campos de cada modelo y el resto se descarta.
+export async function leerEtiquetas() {
+  const j = await llamarHub('GetUserStatus');
+  const configs = j?.userStatus?.cascadeModelConfigData?.clientModelConfigs;
+  if (!Array.isArray(configs)) return null;
+  return Object.fromEntries(
+    configs
+      .filter((c) => typeof c.modelId === 'string')
+      .map((c) => [c.modelId, { titulo: c.tagTitle, descripcion: c.tagDescription, retiro: fechaDeRetiro(c.tagDescription) ?? undefined }]),
+  );
+}
+
+const grupoDe = (cuota, modelo) =>
+  cuota?.grupos.find((g) => (/^(claude|gpt)/.test(modelo ?? '') ? /claude/i : /gemini/i).test(g.grupo));
+
+// Lo que gastó una ejecución: la diferencia del % usado antes y después, en el grupo de su modelo.
+export function gastoCuota(antes, despues, modelo) {
+  const a = grupoDe(antes, modelo)?.ventanas;
+  const d = grupoDe(despues, modelo)?.ventanas;
+  if (!d) return null;
+  const r = { grupo: grupoDe(despues, modelo).grupo };
+  for (const v of ['5h', 'semana']) {
+    if (!d[v]) continue;
+    // Si la ventana se reinició en medio (cambió su fecha de reinicio), la resta no dice nada.
+    const misma = a?.[v] && (!a[v].reinicio || !d[v].reinicio || a[v].reinicio === d[v].reinicio);
+    const gasto = misma ? Math.round((d[v].usado - a[v].usado) * 1e4) / 1e4 : undefined;
+    r[v] = { usado: d[v].usado, gasto: gasto >= 0 ? gasto : undefined, reinicio: d[v].reinicio };
+  }
+  return r;
 }
 
 function agruparModelos(lista) {
@@ -254,7 +508,9 @@ const DENEGADO = /auto-denied|soft[- ]?denied/i;
 const PRINT_TIMEOUT = /print.?timeout/i;
 // Fallos de la plataforma que pasan solos (vistos el 16/10 y el 20/10): reintentar suele bastar.
 // Sin «internal» ni «unavailable» sueltos: con /i atraparían trazas de Node (node:internal/…) y errores permanentes.
-const TRANSITORIO = /stream was interrupted|no capacity available|\bcode 50[0234]\b|internal error encountered/i;
+// 20/11 y 21/11: cortes de red y un arranque fallido del backend, que pasan solos.
+const TRANSITORIO =
+  /stream was interrupted|no capacity available|\bcode 50[0234]\b|internal error encountered|network issue connecting|empty conversation id|no such host|wsasend/i;
 const SALIDA_LARGA = /output token limit/i;
 // En cli.log, el modelo abrió su llamada final y no devolvió nada en 5 min (Argon, 20/10 y 25/10).
 const MUDO = /stream idle timeout/i;
@@ -452,10 +708,12 @@ export function comandosDeAgy(conversacion, desde) {
 const PLAZOS = { low: 900, medium: 1200, high: 1800 };
 const PLAZO_POTENTE = 2700;
 const PLAZO_DESCONOCIDO = 1800;
-const TOPES = { rapido: 7200, medio: 7200, potente: 14400 };
+const TOPES = { rapido: 7200, medio: 7200, potente: 14400, maximo: 14400 };
 const SILENCIOS_DE_MARGEN = 3;
 
+// El Orchestrator no lleva nivel: se vigila como lo potente.
 const nivelGama = (slug) => {
+  if (/^gemini-pro-orchestrator/.test(slug)) return { gama: 'potente', nivel: 'high' };
   const p = parsearModelo(slug);
   return p && { gama: gama(p.familia), nivel: p.nivel };
 };
@@ -464,7 +722,7 @@ export function plazoInicial(slug, esfuerzo) {
   const p = nivelGama(slug);
   if (!p) return PLAZO_DESCONOCIDO;
   const nivel = esfuerzo ?? p.nivel;
-  return p.gama === 'potente' || nivel === 'xhigh' ? PLAZO_POTENTE : PLAZOS[nivel] ?? PLAZO_DESCONOCIDO;
+  return ['potente', 'maximo'].includes(p.gama) || ['xhigh', 'max'].includes(nivel) ? PLAZO_POTENTE : PLAZOS[nivel] ?? PLAZO_DESCONOCIDO;
 }
 
 // Una tarea con pausas largas (archivos grandes) gana margen sola; una de pasos rápidos conserva el inicial.
@@ -473,7 +731,7 @@ export const plazoDinamico = (inicial, silencioMaximo) => Math.max(inicial, SILE
 // Solo contra un modelo en bucle que gaste cuota: mientras no llegue aquí, una tarea que avanza no se corta.
 export const topeDeTiempo = (slug) => {
   const p = nivelGama(slug);
-  return TOPES[p?.nivel === 'xhigh' ? 'potente' : p?.gama ?? 'rapido'];
+  return TOPES[['xhigh', 'max'].includes(p?.nivel) ? 'potente' : p?.gama ?? 'rapido'];
 };
 
 // agy solo da el id al final. Su primer paso trae el mensaje, que nombra el encargo: la carpeta es única, así que
@@ -631,6 +889,8 @@ const ESCRIBE_DIRECTO = ' Crea y edita los archivos directamente con tus herrami
 const SIN_RAZONAMIENTO = ' Tu respuesta final es solo el entregable: sin razonamiento, borradores ni notas de lo que vas pensando.';
 // tesis-salud, 05/11: Flash buscó 5 archivos que no existían y al final uno fuera del espacio de trabajo; la denegación vació su respuesta.
 const SOLO_SUS_ARCHIVOS = ' Lee solo los archivos que nombra el encargo, dentro de estas carpetas. Si uno no existe, sigue sin él y dilo en tu respuesta; no busques otros.';
+// 19/11: Flash pidió una herramienta MCP que el encargo no nombraba y la denegación vació su respuesta (dos veces).
+const SIN_MCP_AJENO = ' No uses herramientas MCP salvo las que nombra el encargo.';
 
 export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, esfuerzo, conversacion, esquema, addDirs = [], cwd, ajustes, conTerminal = false, terminal = [], accesoRetirado = false }) {
   // --mode plan no impide escribir en modo no interactivo, y a veces prepara un plan en lugar de responder:
@@ -648,6 +908,7 @@ export function construirArgs({ encargo, modelo, modo = 'lectura', timeout = 0, 
     `Lee el archivo ${encargo} y cumple el encargo que contiene.` +
     POR_MODO[modo] +
     SOLO_SUS_ARCHIVOS +
+    SIN_MCP_AJENO +
     (conTerminal ? CON_TERMINAL + (cwd ? ENTRAR_AL_PROYECTO(cwd) : '') : '') +
     (terminal.length ? POR_NOMBRE(terminal) : '') +
     (accesoRetirado && !conTerminal ? SIN_ACCESO_AHORA : '') +
@@ -1083,6 +1344,9 @@ function imprimir(resumen, formato) {
   if (resumen.lista) lineas.push(`lista: ${resumen.lista}`);
   for (const [grupo, modelos] of Object.entries(resumen.grupos ?? {})) lineas.push(`${grupo}: ${modelos.join(', ')}`);
   for (const [g, familias] of Object.entries(resumen.gamas ?? {})) lineas.push(`gama ${g}: ${familias.join(', ')}`);
+  for (const [f, texto] of Object.entries(resumen.familias ?? {})) lineas.push(`${f}: ${texto}`);
+  if (resumen.proximas?.length) lineas.push(`próximos cambios: ${resumen.proximas.join('; ')}`);
+  if (resumen.lineas) lineas.push(...resumen.lineas);
   if (resumen.alias) {
     lineas.push('alias:');
     for (const [alias, slug] of Object.entries(resumen.alias)) lineas.push(`  ${alias} → ${slug}`);
@@ -1098,6 +1362,12 @@ function imprimir(resumen, formato) {
     const agy = resumen.segundos_agy !== undefined && resumen.segundos_agy !== resumen.segundos ? ` (agy: ${resumen.segundos_agy} s activos)` : '';
     lineas.push(`tiempo: ${duracion(resumen.segundos)} de reloj${agy} · tokens de agy: ${resumen.tokens ?? '?'}`);
   }
+  if (resumen.cuota || resumen.costo_usd !== undefined) {
+    const costo =
+      resumen.costo_usd !== undefined ? `costo ${resumen.costo_acumulado ? 'de toda la conversación ' : ''}≈ USD ${resumen.costo_usd.toFixed(2)}` : '';
+    lineas.push(resumen.cuota ? `${lineaCuota(resumen.cuota)}${costo ? ` · ${costo}` : ''}` : `${costo} (sin % real de cuota: abre Antigravity para verlo)`);
+  }
+  if (resumen.revisar?.length) lineas.push(`revisar skill (díselo al usuario): ${resumen.revisar.join('; ')}`);
   if (resumen.tabla) lineas.push(...resumen.tabla);
   if (resumen.conversacion) lineas.push(`conversación: ${resumen.conversacion}`);
   if (resumen.archivos !== undefined) {
@@ -1148,7 +1418,146 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
+// Para el protocolo de actualización (--revisar): fecha de esta versión, versión de agy con la que se probó y la
+// lista de `agy models` que conocía. Lo que se salga de esto es motivo para revisar la skill.
+export const FECHA_VERSION = '2026-11-24';
+export const AGY_PROBADA = '1.5.16';
+export const MODELOS_CONOCIDOS = [
+  'gemini-4-neon-high', 'gemini-4-neon-xhigh', 'gemini-4-neon-medium', 'gemini-4-neon-low',
+  'gemini-4-carbon-medium', 'gemini-4-carbon-high', 'gemini-4-carbon-low',
+  'gemini-4-argon-medium', 'gemini-4-argon-high', 'gemini-4-argon-low',
+  'gemini-4-hydrogen-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-low',
+  'gemini-pro-orchestrator-neon', 'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon',
+  'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low',
+  'claude-opus-5-5-low', 'claude-opus-5-5-medium', 'claude-opus-5-5-high',
+  'claude-sonnet-5-5-low', 'claude-sonnet-5-5-medium', 'claude-sonnet-5-5-high',
+  'gpt-oss-120b-medium',
+];
+const DIAS_SIN_REVISAR = 30;
+
+const diasEntre = (a, b) => Math.round((new Date(`${b}T00:00:00`) - new Date(`${a}T00:00:00`)) / 864e5);
+
+// Motivos para revisar la skill, sin gastar tokens. Va en cada resumen y en --revisar.
+export function motivosRevision({ modelos, etiquetas, versionAgy, dia = hoy() }) {
+  const motivos = [];
+  if (modelos) {
+    const nuevos = modelos.filter((m) => !MODELOS_CONOCIDOS.includes(m));
+    const quitados = MODELOS_CONOCIDOS.filter((m) => !modelos.includes(m) && !retirado(m, dia));
+    if (nuevos.length) motivos.push(`modelos nuevos en agy: ${nuevos.join(', ')}`);
+    if (quitados.length) motivos.push(`modelos que ya no están en agy: ${quitados.join(', ')}`);
+    const sinPrecio = modelos.filter((m) => /^gemini-/.test(m) && !precio(m, dia));
+    if (sinPrecio.length) motivos.push(`modelos Gemini sin precio en PRECIOS: ${sinPrecio.join(', ')}`);
+  }
+  const anunciados = Object.entries(etiquetas ?? {}).filter(([slug, e]) => e.retiro && !Object.keys(RETIROS).some((p) => slug === p || slug.startsWith(p)));
+  if (anunciados.length) motivos.push(`Google anunció retiros que la skill no tiene en RETIROS: ${anunciados.map(([s, e]) => `${s} (${e.retiro})`).join(', ')}`);
+  if (versionAgy) {
+    const menor = (v) => v.split('.').slice(0, 2).join('.');
+    if (menor(versionAgy) !== menor(AGY_PROBADA)) motivos.push(`agy ${versionAgy}: la skill se probó con ${AGY_PROBADA}`);
+  }
+  if (diasEntre(FECHA_VERSION, dia) > DIAS_SIN_REVISAR) motivos.push(`${diasEntre(FECHA_VERSION, dia)} días sin una versión nueva de la skill`);
+  return motivos;
+}
+
+// Una línea por ejecución, solo con metadatos (sin encargo ni respuesta): el gasto real de cada modelo y tarea.
+const archivoConsumo = () => join(carpetaDatos(), 'consumo.jsonl');
+function registrarConsumo(entrada) {
+  try {
+    mkdirSync(carpetaDatos(), { recursive: true });
+    appendFileSync(archivoConsumo(), JSON.stringify({ fecha: fechaLocal(Date.now()), ms: Date.now(), version: VERSION, ...entrada }) + '\n');
+  } catch {}
+}
+
+const leerJsonl = (archivo) => {
+  try {
+    return readFileSync(archivo, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l)];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+};
+
+const hora = (iso) => {
+  if (!iso) return '?';
+  const d = new Date(iso);
+  const dos = (n) => String(n).padStart(2, '0');
+  const mismoDia = d.toDateString() === new Date().toDateString();
+  return `${mismoDia ? '' : `${dos(d.getDate())}/${dos(d.getMonth() + 1)} `}${dos(d.getHours())}:${dos(d.getMinutes())}`;
+};
+const pct = (n) => (n === undefined ? '?' : `${n < 1 ? n.toFixed(2) : n.toFixed(1)} %`);
+
+export function lineaCuota(c) {
+  if (!c) return null;
+  const v = (k, nombre) =>
+    c[k] && `${nombre} ${pct(c[k].usado)}${c[k].gasto !== undefined ? ` (+${pct(c[k].gasto)})` : ''}${c[k].reinicio ? `, reinicia ${hora(c[k].reinicio)}` : ''}`;
+  return [`${c.grupo ?? 'cuota'}:`, [v('5h', '5 h'), v('semana', 'semana')].filter(Boolean).join(' · ')].join(' ');
+}
+
+// Uso de Claude Code, si la statusline lo guarda (extras/statusline-uso.mjs del repo).
+function leerUsoClaude() {
+  const archivo = process.env.DELEGAR_USO_CLAUDE || join(homedir(), '.claude', 'uso-claude.json');
+  try {
+    return JSON.parse(readFileSync(archivo, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export async function informeCuota() {
+  const lineas = [];
+  let cuota = await leerCuota();
+  let vieja = '';
+  if (!cuota) {
+    try {
+      cuota = JSON.parse(readFileSync(join(carpetaDatos(), 'cuota.json'), 'utf8'));
+      vieja = ` (lectura del ${fechaLocal(cuota.fecha)}: abre Antigravity para el % de ahora)`;
+    } catch {
+      lineas.push('Antigravity: sin dato real (abre la app o el IDE de Antigravity, que levantan el hub local).');
+    }
+  }
+  for (const g of cuota?.grupos ?? []) lineas.push(lineaCuota({ grupo: g.grupo, ...g.ventanas }) + vieja);
+  const ahora = Date.now();
+  const consumo = leerJsonl(archivoConsumo());
+  for (const [nombre, horas] of [['últimas 5 h', 5], ['últimos 7 días', 168]]) {
+    const filas = consumo.filter((c) => c.ms && ahora - c.ms <= horas * 3600e3);
+    if (!filas.length) continue;
+    const porModelo = {};
+    // tokens y usd de una conversación continuada son acumulados: solo cuenta la última línea de cada una.
+    const ultima = new Map(filas.filter((f) => f.conversacion).map((f) => [f.conversacion, f]));
+    for (const f of filas) {
+      const m = (porModelo[f.modelo] ??= { veces: 0, tokens: 0, usd: 0, semana: 0 });
+      m.veces++;
+      m.semana += f.gasto_semana ?? 0;
+      if (f.conversacion && ultima.get(f.conversacion) !== f) continue;
+      m.tokens += f.tokens ?? 0;
+      m.usd += f.usd ?? 0;
+    }
+    lineas.push(
+      `delegaciones de las ${nombre}: ` +
+        Object.entries(porModelo)
+          .map(([m, x]) => `${m} ×${x.veces}, ${Math.round(x.tokens / 1000)} mil tokens, ≈ USD ${x.usd.toFixed(2)}${x.semana ? `, ${pct(x.semana)} de la semana` : ''}`)
+          .join(' | '),
+    );
+  }
+  const claude = leerUsoClaude();
+  if (claude) {
+    const edad = Math.round((ahora - (claude.fecha ?? 0)) / 60000);
+    const v = (x, n) => x && `${n} ${pct(x.usado)}${x.reinicio ? `, reinicia ${hora(x.reinicio)}` : ''}`;
+    lineas.push(
+      `Claude Code (hace ${edad} min): ` +
+        [claude.contexto !== undefined && `contexto ${pct(claude.contexto)}`, v(claude['5h'], '5 h'), v(claude.semana, 'semana')].filter(Boolean).join(' · '),
+    );
+  }
+  return lineas;
+}
 
 function archivoIncidencias() {
   return process.env.DELEGAR_AGY_INCIDENCIAS || join(homedir(), '.delegar-antigravity', 'incidencias.jsonl');
@@ -1237,8 +1646,28 @@ async function listarModelos(bin, o) {
     resumen.alias = {};
     for (const alias of [...new Set([...ALIAS_FIJOS, ...deFamilias])]) {
       const r = resolverModelo(alias, lista.modelos);
-      resumen.alias[alias] = r.slug ? `${r.slug}${r.nota ? ` (${r.nota})` : ''}` : 'no disponible';
+      resumen.alias[alias] = r.slug && r.disponible !== false ? `${r.slug}${r.nota ? ` (${r.nota})` : ''}` : 'no disponible';
     }
+    // Precio de hoy y rol según Google, una línea por familia: para elegir por costo y no solo por nombre.
+    const base = precio('gemini-4-hydrogen-medium');
+    resumen.familias = {};
+    for (const slug of lista.modelos.filter((m) => familiaDePrecio(m))) {
+      const familia = /orchestrator/.test(slug) ? slug : familiaDePrecio(slug);
+      if (resumen.familias[familia]) continue;
+      const p = precio(slug);
+      const e = lista.etiquetas?.[slug];
+      resumen.familias[familia] = [
+        nivelGama(slug)?.gama,
+        p ? `USD ${p.entrada}/${p.salida} por millón${base ? ` (${(p.entrada / base.entrada).toFixed(1)}× Hydrogen)` : ''}` : 'sin precio',
+        retiro(slug) && `se retira el ${retiro(slug)}`,
+        e?.descripcion && `«${e.descripcion}»`,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    }
+    if (lista.retirados) resumen.avisos = [...(resumen.avisos ?? []), `retirados a la fecha (no se usan): ${lista.retirados.join(', ')}`];
+    const proximas = fechasProximas(30);
+    if (proximas.length) resumen.proximas = proximas;
   }
   imprimir(resumen, o.formato);
   return CODIGOS[resumen.estado] ?? 1;
@@ -1384,6 +1813,8 @@ async function principal() {
       seco: { type: 'boolean', default: false },
       anotar: { type: 'string' },
       incidencias: { type: 'boolean', default: false },
+      cuota: { type: 'boolean', default: false },
+      revisar: { type: 'boolean', default: false },
     },
   });
   // En un lote, cada encargo trabaja en su subcarpeta salvo que se pida un --cwd común.
@@ -1400,6 +1831,28 @@ async function principal() {
     const entradas = leerIncidencias();
     if (o.formato === 'json') process.stdout.write(JSON.stringify(entradas, null, 2) + '\n');
     else process.stdout.write(resumirIncidencias(entradas, archivoIncidencias()) + '\n');
+    return 0;
+  }
+  if (o.cuota) {
+    imprimir({ estado: 'cuota_actual', lineas: await informeCuota() }, o.formato);
+    return 0;
+  }
+  if (o.revisar) {
+    const bin = ubicarAgy();
+    const lista = bin ? await obtenerModelos(bin, { refrescar: true }) : { modelos: null };
+    const version = bin && spawnSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000, windowsHide: true });
+    const versionAgy = version?.stdout?.trim().match(/\d+\.\d+\.\d+/)?.[0];
+    const motivos = motivosRevision({ modelos: lista.modelos, etiquetas: lista.etiquetas, versionAgy });
+    const desde = leerIncidencias().filter((i) => i.tipo === 'incidencia' && i.fecha >= FECHA_VERSION);
+    const porEstado = contar(desde.map((i) => i.estado));
+    const lineas = [
+      `skill ${VERSION} del ${FECHA_VERSION} (hace ${diasEntre(FECHA_VERSION, hoy())} días) · agy ${versionAgy ?? '?'} (probada: ${AGY_PROBADA})`,
+      motivos.length ? `motivos para revisar: ${motivos.join('; ')}` : 'sin motivos automáticos para revisar',
+      `incidencias desde esta versión: ${porEstado.length ? porEstado.map(([e, n]) => `${e} ×${n}`).join(', ') : 'ninguna'}${porEstado.some(([, n]) => n >= 3) ? ' (3 o más del mismo tipo: revisar)' : ''}`,
+      ...fechasProximas(30).map((f) => `próximo: ${f}`),
+      'siguiente paso: --incidencias para el detalle; luego corregir, probar, PR, etiqueta y reinstalar (CLAUDE.md del repo).',
+    ];
+    imprimir({ estado: 'revision', lineas, avisos: lista.aviso ? [lista.aviso] : undefined }, o.formato);
     return 0;
   }
   if (o.estado !== undefined) {
@@ -1571,6 +2024,8 @@ async function principal() {
     }
     const salida = join(carpeta, 'agy-salida.json');
     const errores = join(carpeta, 'agy-errores.txt');
+    // El % real antes y después dice cuánta cuota gastó esta ejecución (con otras tareas en paralelo, también las suyas).
+    const cuotaAntes = await leerCuota();
     const inicio = Date.now();
     const timeout = timeoutPedido ?? topeDeTiempo(modelo);
     vigilante = crearVigilante({ encargo, conversacion: opciones.conversacion, modelo, esfuerzo: o.esfuerzo, plazoFijo, tope: timeout, carpeta, inicioTotal });
@@ -1591,7 +2046,22 @@ async function principal() {
     const idIntento = json?.conversation_id || vigilante.conversacion();
     const fallosLog = leerLogAgy({ desde: inicio, conversacion: idIntento });
     final = { modelo, json, inicio, fin: Date.now(), fallosLog, idIntento, ...clasificar({ json, stderr, fallosLog, ...r }) };
+    final.cuota = gastoCuota(cuotaAntes, await leerCuota(), modelo);
+    final.usd = costoUsd(modelo, json?.usage) ?? undefined;
     intentos.push({ modelo, estado: final.estado });
+    registrarConsumo({
+      proyecto: basename(cwd),
+      // Con --conversacion, tokens y usd son acumulados: --cuota cuenta una vez cada conversación (su último valor).
+      conversacion: idIntento || undefined,
+      modelo,
+      estado: final.estado,
+      segundos: Math.round((final.fin - inicio) / 1000),
+      tokens: json?.usage?.total_tokens,
+      usage: json?.usage,
+      usd: final.usd,
+      gasto_5h: final.cuota?.['5h']?.gasto,
+      gasto_semana: final.cuota?.semana?.gasto,
+    });
     registros.push({
       fecha: fechaLocal(inicio),
       modelo,
@@ -1623,11 +2093,16 @@ async function principal() {
       await new Promise((listo) => setTimeout(listo, espera));
       continue;
     }
-    if (!['cuota', 'modelo_mudo', 'transitorio'].includes(final.estado)) break;
+    // Ante cuota no se cambia de modelo: todos los Gemini comparten una sola (24/11).
+    if (!['modelo_mudo', 'transitorio'].includes(final.estado)) break;
   }
   if (!final) return sinModelo('Ningún modelo de la cadena de respaldo está en agy models.');
 
   const { json } = final;
+  if (final.estado === 'cuota') {
+    final.detalle +=
+      ' Todos los Gemini comparten una sola cuota (5 h y semanal): cambiar de modelo Gemini no sirve. Espera al reinicio o hazlo tú; el uso de Claude o GPT dentro de agy va en otra cuota, solo si el usuario lo pide.';
+  }
   const marcar = (estado, detalle) => {
     final.estado = estado;
     final.detalle = detalle;
@@ -1718,6 +2193,14 @@ async function principal() {
     segundos: Math.round((final.fin - inicioTotal) / 1000),
     segundos_agy: registros.at(-1).segundos_agy,
     tokens: json?.usage?.total_tokens,
+    cuota: final.cuota ?? undefined,
+    costo_usd: final.usd,
+    // Al continuar una conversación, el usage de agy es acumulado: el costo también.
+    costo_acumulado: opciones.conversacion && final.usd !== undefined ? true : undefined,
+    revisar: (() => {
+      const m = motivosRevision({ modelos: lista.modelos, etiquetas: lista.etiquetas });
+      return m.length ? m : undefined;
+    })(),
     conversacion: final.idIntento || undefined,
     archivos,
     saltos_corregidos: saltos.length ? saltos : undefined,

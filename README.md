@@ -5,7 +5,7 @@ Una skill para que **Claude Code**, o cualquier otro LLM que disponga de una ter
 El agente actúa como orquestador:
 
 1. **Decide si conviene delegar.** Sí para leer o resumir muchos archivos, borradores largos, cambios mecánicos en varios archivos, búsquedas amplias o una segunda opinión. No para tareas pequeñas, datos confidenciales ni acciones que requieren tu autorización.
-2. **Elige el modelo por gama y nivel de esfuerzo,** no por nombre, porque Antigravity cambia los modelos sin aviso: la gama rápida (Gemini Flash, la más barata) para lo mecánico, la media (Gemini 4 Hydrogen) para editar, correr pruebas y revisar con criterio, y la potente (hoy Gemini 4 Neon, con Argon de respaldo) para lo complejo. El nivel Extra (`xhigh`) solo se usa si la tarea lo exige. El script traduce la gama al mejor modelo de la lista vigente de `agy models`, así que una familia o versión nueva entra sola. Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
+2. **Elige el modelo por gama, nivel y costo,** no por nombre, porque Antigravity cambia los modelos sin aviso. Primero mira si basta un script sin IA; si no, Gemini 4 Hydrogen para casi todo (el modelo por defecto), Gemini 4 Neon para lo complejo, el Orchestrator para tareas largas con terminal y Gemini 4 Carbon solo para lo más difícil. Como todos los Gemini comparten una cuota que se gasta según el precio de los tokens, el agente conoce el precio de cada modelo en cada fecha y cuánta cuota gastó cada delegación. Los niveles Extra (`xhigh`) y `max` solo se usan si tú los pides. Lo que Google retira (3.8 Flash y Argon, el 30/11/2026) deja de usarse solo. Los modelos Claude dentro de Antigravity se usan solo si Gemini falla o tú los pides.
 3. **Escribe el encargo** en un archivo fuera de tu repositorio, en una carpeta única que crea el script (así dos sesiones en paralelo nunca comparten carpeta). Por defecto, la plantilla le prohíbe a agy la terminal y la web, porque una sola petición denegada le deja la respuesta vacía.
 4. **Le da solo los accesos que hacen falta,** en cada llamada: agy trabaja como su subagente, le propone un plan y le pide permiso (ver [Terminal bajo control](#terminal-bajo-control)).
 5. **Ejecuta agy** con un script que devuelve un resumen de pocas líneas. La respuesta completa queda en un archivo.
@@ -14,8 +14,9 @@ El agente actúa como orquestador:
 
 ```text
 estado: ok
-modelo: gemini-3.8-flash-medium (pedido: rapido-medium)
+modelo: gemini-4-hydrogen-medium (pedido: medio-medium)
 tiempo: 104 s de reloj (agy: 99 s activos) · tokens de agy: 105521
+Gemini Models: 5 h 14.2 % (+1.2 %), reinicia 18:20 · semana 3.1 % (+0.30 %), reinicia 30/11 18:13 · costo ≈ USD 0.17
 archivos tocados: src/almacen.js, src/clientes.js, src/envios.js, src/facturas.js, src/pedidos.js, src/productos.js
 respuesta (completa en …/respuesta.md):
 Renombré obtenerDato a leerDato en la definición, la exportación y las llamadas de los 6 archivos.
@@ -93,35 +94,48 @@ El script también se puede usar directamente:
 ```bash
 # Crea una carpeta de encargo única e imprime su ruta; escribe ahí encargo.md
 node skills/delegar-antigravity/scripts/agy.mjs --carpeta resumen-src
-node skills/delegar-antigravity/scripts/agy.mjs --encargo <carpeta>/encargo.md --cwd <proyecto> --modelo rapido-medium --modo lectura --respaldo
+node skills/delegar-antigravity/scripts/agy.mjs --encargo <carpeta>/encargo.md --cwd <proyecto> --modelo medio-medium --modo lectura --respaldo
 ```
 
 **Qué modelo pedir.** Se pide por gama y nivel de esfuerzo, y el script elige el mejor modelo que haya hoy:
 
-| Tarea | Alias |
-|---|---|
-| Mecánica: extraer, listar, formatear, resumir | `rapido-low` o `rapido-medium` (por defecto) |
-| Intermedia sin terminal: borradores, revisar textos | `rapido-high` |
-| Editar código, correr pruebas o comandos | `medio-medium` |
-| Revisión de criterio de un diff o un plan | `medio-high` |
-| Compleja pero acotada: un error sutil en pocos archivos | `potente-medium` |
-| La más difícil: arquitectura, auditoría, revisión profunda | `potente-high` (de 5 a más de 20 min) |
-| Un problema profundo que ya falló en `high` | `medio-xhigh` o `potente-xhigh` (el más caro) |
+| Tarea | Alias | Modelo (24/11/2026) |
+|---|---|---|
+| Mecánica y determinista: contar, comparar, renombrar con un patrón | ninguno: un script | — |
+| Mecánica y corta: extraer, listar, formatear | `rapido-low` | Hydrogen Low |
+| Editar código, correr pruebas, resumir (la mayoría) | `medio-medium` (por defecto) | Hydrogen Medium |
+| Revisión de criterio de un diff o un plan | `medio-high` | Hydrogen High |
+| Compleja: un error sutil, arquitectura, auditoría | `potente-medium` o `potente-high` | Neon |
+| Larga con terminal: construir algo con sus pruebas | `orquestador` | Neon planifica, Hydrogen ejecuta |
+| La más difícil y larga, o lo que Neon High no resolvió | `maximo-high` u `orquestador-maximo` | Carbon |
+| Solo si tú lo pides | `medio-xhigh` o `potente-xhigh` | El nivel Extra, el más caro |
 
-La gama rápida son las familias Flash; la media, Gemini 4 Hydrogen; la potente, todas las demás (hoy Gemini 4 Neon y, detrás, Argon). Gemini 4 Carbon, solo para Google AI Ultra, nunca se elige por gama: se pide por su nombre. Una familia o versión nueva entra sola, sin actualizar la skill. Los precios y la evidencia de cada modelo están en `references/modelos.md`.
+Precios (USD por millón de tokens, entrada/salida): Hydrogen 1,5/7,5; Neon 3/15; Carbon 2/10 hasta el 30/11/2026 y 4/20 desde el 1/12. `--modelos` siempre muestra los de hoy. El precio por token engaña: Hydrogen cuesta el doble que Flash por token, pero termina con muchos menos tokens y gasta menos cuota por tarea, como dice Google mismo. Una familia o versión nueva entra sola, sin actualizar la skill. La evidencia de cada modelo está en `references/modelos.md`.
+
+**Cuota.** Todos los Gemini comparten un límite de 5 h y uno semanal (Claude y GPT tienen otros), y cada tarea gasta según el precio de sus tokens. Con la app o el IDE de Antigravity abiertos, el script lee el % real del servicio local de agy (el mismo que usa `/usage`) antes y después de cada delegación, y el resumen dice cuánto gastó. `--cuota` lo resume con lo gastado por modelo en las últimas 5 h y 7 días. Sin Antigravity abierto, el resumen da solo el costo estimado. Ese servicio no está documentado: si una versión de agy lo cambia, la skill sigue funcionando sin el % real.
+
+**Tu propio uso de Claude Code (opcional).** [`extras/statusline-uso.mjs`](extras/statusline-uso.mjs) es una statusline que muestra el contexto, la ventana de 5 h y la semana de Claude junto a la cuota de Gemini (`ctx 42% · 5h 30% (18:20) · sem 12% (lun) · agy 5h 3% · sem 1%`), y la guarda para que `--cuota` la muestre al agente. Así el agente sabe cuándo le conviene delegar más. Cópiala a `~/.claude/` y agrega en `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "node C:/Users/<tu usuario>/.claude/statusline-uso.mjs" }
+```
+
+La statusline corre en Claude Code en la terminal. En la extensión de VS Code no se ejecutó (24/11/2026): ahí `--cuota` muestra la última lectura que dejó una sesión de terminal.
 
 | Opción | Para qué |
 |---|---|
 | `--carpeta <tema>` | Crea en `%TEMP%/delegar-antigravity/` una carpeta de encargo nueva (`<fecha>-<hora>-<tema>`, con sufijo si ya existe) e imprime su ruta |
 | `--modo lectura` / `edicion` | Solo lectura (por defecto) o crear y editar archivos |
-| `--modelos` | Lista los modelos vigentes por familia, qué familias hay en cada gama y a qué modelo se resuelve cada alias hoy |
-| `--modelo <alias o nombre>` | Un alias de gama (`rapido-*`, `medio-*` o `potente-*`, con `low`, `medium`, `high` o `xhigh`), de familia (`flash-high`, `hydrogen-xhigh`, `neon-high`, `sonnet-low`…) o un nombre exacto (también los Orchestrator). Se resuelve a la versión más alta de `agy models`; por defecto `rapido-medium`. Si una familia desaparece, su alias pasa a su gama (hoy `pro-high` usa Neon High) |
-| `--respaldo` | Reintenta una vez un fallo pasajero (sin capacidad, error interno, conexión cortada) y, ante un error de cuota, un modelo que ya no existe o uno que se quedó mudo, prueba otro modelo Gemini (Neon → Argon → Hydrogen → Flash) |
+| `--modelos` | Lista los modelos vigentes por familia, la gama, el precio de hoy, el rol que da Google, los retiros y cambios de precio de los próximos 30 días, y a qué modelo se resuelve cada alias hoy |
+| `--modelo <alias o nombre>` | Un alias de gama (`rapido-*`, `medio-*`, `potente-*` o `maximo-*`, con `low`, `medium`, `high` o `xhigh`), `orquestador`, `orquestador-maximo`, un alias de familia (`hydrogen-high`, `neon-high`, `carbon-high`, `sonnet-low`…) o un nombre exacto. Se resuelve a la versión más alta de `agy models`; por defecto `medio-medium`. Si una familia desaparece o se retira, su alias pasa a su gama (`argon-high` usa Neon High) |
+| `--respaldo` | Reintenta una vez un fallo pasajero (sin capacidad, error interno, conexión cortada) y, ante un modelo que ya no existe o uno que se quedó mudo, prueba otro modelo Gemini de la gama de abajo (Carbon → Neon → Hydrogen). Ante una cuota agotada no cambia: la cuota es la misma para todos los Gemini |
+| `--cuota` | % real de cada ventana de Antigravity y cuándo se reinicia, lo gastado por modelo en las últimas 5 h y 7 días y, si la statusline lo guarda, tu uso de Claude Code |
+| `--revisar` | Dice si hay que actualizar la skill: modelos nuevos o sin precio, retiros anunciados, versión de agy, incidencias desde esta versión y días sin una versión nueva |
 | `--lote <carpeta>` | Corre cada subcarpeta que tenga `encargo.md`, hasta 5 a la vez (`--paralelo`), y devuelve una tabla |
 | `--esquema <archivo.json>` | Pide una respuesta estructurada; el JSON queda en `respuesta.json` aunque agy lo escriba dentro del texto |
 | `--permitir-secretos` | Ejecuta aunque el espacio de trabajo tenga `.env`, claves o credenciales; el agente solo lo usa con tu permiso |
 | `--conversacion <id>` | Continúa una conversación anterior, para corregir |
-| `--timeout <s>` | Tope contra bucles: sin el flag, 2 h en las gamas rápida y media, y 4 h en la potente o con `xhigh`; `0` lo quita |
+| `--timeout <s>` | Tope contra bucles: sin el flag, 2 h en las gamas rápida y media, y 4 h en la potente, la máxima, el Orchestrator o con `xhigh`; `0` lo quita |
 | `--sin-avance <s>` | Corta si no hay pasos nuevos en ese plazo; sin el flag, se adapta a la tarea; `0` lo desactiva |
 | `--estado <carpeta>` | Dice cómo va una ejecución, sin gastar tokens |
 | `--formato json` | Resumen en JSON en lugar de texto |
@@ -141,12 +155,16 @@ La lista de `agy models` tarda unos 12 s, así que el script la guarda unas hora
 
 - En la carpeta del encargo: `respuesta.md` con la respuesta completa (y `respuesta.json` con `--esquema`), `respuesta-final.md` (el entregable limpio cuando agy siguió tras un corte por límite de salida), `agy-salida.json` y `agy-errores.txt` de la última ejecución, `historial.jsonl` con una línea por ejecución y, en un lote, `resumen.json`.
 - En `~/.delegar-antigravity/incidencias.jsonl`: un registro central, fuera de tus proyectos, de cada ejecución que no terminó en `ok` y de las lecciones anotadas con `--anotar`. Guarda el estado, el modelo, las acciones denegadas y el texto de error de agy, nunca el encargo ni la respuesta. Sirve para ver qué falla en todos tus proyectos y mejorar la skill. Puedes cambiar la ruta con la variable `DELEGAR_AGY_INCIDENCIAS`.
+- En `~/.delegar-antigravity/consumo.jsonl` y `cuota.json`: una línea por ejecución con el modelo, los tokens, el costo estimado y el % de cuota gastado, y la última lectura de la cuota. Solo metadatos: ni el encargo, ni la respuesta, ni el token del servicio local de agy. La carpeta se cambia con `DELEGAR_AGY_DATOS`.
+
+**¿Cuándo actualizar la skill?** Cada resumen avisa con `revisar skill` si apareció un modelo nuevo o sin precio, si Google anunció un retiro que la skill no conoce o si pasaron 30 días sin una versión nueva. `--revisar` da el informe completo, con la versión de agy y las incidencias desde la última versión.
 
 ## Seguridad y privacidad
 
 - Lo que lee agy se envía a los servidores de Google, y agy puede leer cualquier archivo de su espacio de trabajo aunque el encargo se lo prohíba. La skill no delega datos de pacientes, datos personales, secretos ni credenciales sin tu permiso explícito, y el script se detiene solo si encuentra `.env`, `.dev.vars`, claves o credenciales (también `client_secret*.json`, cuentas de servicio y `.netrc`). Si copias documentos a la carpeta del encargo, el agente te ofrece borrarla al terminar.
 - agy trabaja sin terminal salvo que tu agente le dé acceso para esa llamada, siempre con `--sandbox` y nunca con `--dangerously-skip-permissions`. Ningún modo de agy impide que edite archivos: en una tarea de lectura, el script compara los archivos antes y después y avisa si cambió alguno (distingue si fue agy o otro proceso según las herramientas que usó). En una de edición, si agy dejó saltos de línea `\r\r\n` en un archivo de texto, el script los corrige y lo avisa. agy nunca hace commit, push ni publica nada: el agente revisa el diff y te pide permiso para lo demás.
 - Cada delegación gasta la cuota de Antigravity, no la de tu agente.
+- Para el % real de cuota, el script lee el token CSRF que la app de Antigravity guarda en `~/.gemini/antigravity/daemon/hub_<puerto>.json` y consulta solo `127.0.0.1`. El token no se imprime ni se guarda. Para las fechas de retiro consulta además el estado de tu cuenta en ese mismo servicio, que trae tu nombre y tu correo: de esa respuesta solo toma el modelo, su etiqueta y su descripción.
 
 ## Licencia
 

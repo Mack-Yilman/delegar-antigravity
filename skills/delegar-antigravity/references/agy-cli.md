@@ -1,6 +1,6 @@
 # Referencia de Antigravity CLI (agy) en modo no interactivo
 
-Comprobado con agy 1.3.3 (2026-10-11 a 15) y 1.4.12 (2026-10-31) en Windows 11, y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli, /docs/sandbox, /docs/settings?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
+Comprobado con agy 1.3.3 (2026-10-11 a 15), 1.4.12 (2026-10-31) y 1.5.16 (2026-11-24, mismos flags más `--project`, `--remote-agent` y el subcomando `acp`) en Windows 11, y con la documentación oficial: antigravity.google/docs/cli/headless, /docs/permissions?tab=cli, /docs/sandbox, /docs/settings?tab=cli y /docs/cli/modes. Cuando la documentación y `agy --help` no coinciden, manda lo que hace el binario instalado.
 
 ## Flags útiles
 
@@ -8,7 +8,7 @@ Comprobado con agy 1.3.3 (2026-10-11 a 15) y 1.4.12 (2026-10-31) en Windows 11, 
 |---|---|
 | `-p "<mensaje>"` | Ejecuta un mensaje y termina (alias `--print`, `--prompt`) |
 | `--output-format json` | Un solo objeto JSON al final; `stream-json` emite eventos NDJSON |
-| `--model <slug>` | Modelo exacto de `agy models`. El script acepta alias de gama (`rapido-medium`, `potente-high`) o de familia (`flash-medium`) y los resuelve con esa lista |
+| `--model <slug>` | Modelo exacto de `agy models`. El script acepta alias de gama (`medio-medium`, `potente-high`, `maximo-high`), `orquestador` o de familia (`hydrogen-high`) y los resuelve con esa lista |
 | `--mode plan` | Según la documentación, solo herramientas de lectura. En modo no interactivo **no impide editar** (comprobado) y a veces prepara un plan en lugar de responder |
 | `--mode accept-edits` | Aprueba crear y editar archivos. Sin `--mode`, agy también edita en modo no interactivo (comprobado) |
 | `--sandbox` | Restringe la terminal al sandbox del sistema. Por sí solo no da permiso para ejecutar nada |
@@ -31,7 +31,8 @@ Comprobado con agy 1.3.3 (2026-10-11 a 15) y 1.4.12 (2026-10-31) en Windows 11, 
 
 - `status`: `SUCCESS`, `ERROR`, `CANCELED`, `INTERRUPTED`, `INVALID`, `WAITING` o `RUNNING`. Con `ERROR` aparece `error`.
 - `denied_actions` solo aparece si se denegó algo.
-- Al continuar una conversación, `num_turns` y `usage` son acumulados.
+- Al continuar una conversación, `num_turns` y `usage` son acumulados: el costo que da el resumen es el de toda la conversación (lo dice). El % de cuota gastado sí es solo el de esa llamada.
+- `/usage` y las demás órdenes con barra no funcionan con `-p`: el texto va al modelo como un mensaje y gasta tokens (probado el 24/11). La cuota se lee del hub local (ver `modelos.md`).
 - `response` enlaza los archivos como `[nombre](file:///C:/ruta)`; el script los convierte en rutas relativas.
 
 ## Permisos en modo no interactivo

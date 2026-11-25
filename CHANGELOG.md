@@ -1,5 +1,20 @@
 # Historial de versiones
 
+## 0.8.0 — 2026-11-24
+
+Antigravity habilitó Gemini 4 Carbon en el plan Pro, anunció el retiro de 3.8 Flash, Argon y GPT-OSS para el 30/11 y unificó las cuotas: todos los Gemini comparten un límite de 5 h y uno semanal, y cada tarea gasta en proporción al costo de sus tokens.
+
+- **Gamas nuevas:** Hydrogen para lo rápido y lo medio (`medio-medium` es el modelo por defecto), Neon para lo potente y una gama `maximo` (Carbon) que solo se usa pidiéndola, nunca por defecto ni como respaldo. Los alias `flash-*`, `argon-*` y `pro-*` pasan a su gama con el mismo nivel.
+- **Orchestrator:** alias `orquestador` (Neon planifica e Hydrogen ejecuta) y `orquestador-maximo` (Carbon), para tareas largas con terminal. Probado en modo headless: editó, creó pruebas y las corrió en 2 min.
+- **Retiros por fecha:** lo que Google anuncia que se retira deja de elegirse por gama y, desde su fecha, se quita de la lista aunque agy aún lo liste. Las fechas salen de la tabla `RETIROS` y de las etiquetas de Antigravity («Leaving on Nov 30»).
+- **Precios con fecha:** tabla `PRECIOS` (USD por millón de tokens, con tramos por fecha: Carbon dobla el suyo el 1/12). `--modelos` muestra el precio de hoy, cuánto cuesta frente a Hydrogen, el rol que da Google y los cambios de los próximos 30 días.
+- **Cuota real:** `--cuota` da el % usado de cada ventana y cuándo se reinicia, leído del hub local de Antigravity (con la app o el IDE abiertos), lo gastado por modelo en las últimas 5 h y 7 días, y el uso de Claude Code si la statusline lo guarda. Cada resumen dice cuánta cuota gastó esa delegación y su costo estimado, y lo anota en `~/.delegar-antigravity/consumo.jsonl` (solo metadatos). El token del hub nunca se imprime ni se guarda.
+- **Ante una cuota agotada, `--respaldo` ya no cambia de modelo Gemini:** la cuota es la misma para todos.
+- **`--revisar`:** dice si hay que actualizar la skill (modelos nuevos o sin precio, retiros anunciados, versión de agy, incidencias, días sin versión). El resumen de cada delegación trae esos motivos.
+- **Nivel `max`** (agy 1.5.16) reconocido; `xhigh` y `max`, solo si el usuario los pide.
+- **Incidencias resueltas:** el mensaje a agy y la plantilla prohíben las herramientas MCP que el encargo no nombra (Flash vació dos respuestas el 19/11), y los errores «There was a network issue…» y «backend returned an empty conversation id» son transitorios (se reintentan).
+- **`extras/statusline-uso.mjs`:** statusline para Claude Code que muestra contexto, 5 h y semana de Claude junto a la cuota de agy, y lo guarda para `--cuota`. No se instala con la skill.
+
 ## 0.7.0 — 2026-11-18
 
 Llegaron Gemini 4 Neon y Hydrogen, con un nivel nuevo (`xhigh`, el «Extra» de Antigravity). El script los ponía en la misma gama que Argon y no reconocía `xhigh`.

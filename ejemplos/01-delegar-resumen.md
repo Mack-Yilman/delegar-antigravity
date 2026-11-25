@@ -9,6 +9,6 @@
 **Se espera:**
 
 - Escribe el encargo en un archivo **fuera** del proyecto, con la plantilla.
-- Ejecuta `scripts/agy.mjs` con un modelo Gemini Flash y `--modo lectura`.
+- Ejecuta `scripts/agy.mjs` con Hydrogen (`medio-medium` o el modelo por defecto) y `--modo lectura`.
 - No relee los seis archivos por su cuenta para rehacer el trabajo.
 - Entrega la tabla e informa en pocas líneas: modelo, tiempo y lo que verificó.

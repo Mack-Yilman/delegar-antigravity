@@ -7,8 +7,15 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  AGY_PROBADA,
+  FECHA_VERSION,
   MODELO_POR_DEFECTO,
   VERSION,
+  costoUsd,
+  fechaDeRetiro,
+  fechasProximas,
+  motivosRevision,
+  retirado,
   armarAjustes,
   buscarSecretos,
   cadenaRespaldo,
@@ -34,7 +41,7 @@ import {
   soloLeyo,
   topeDeTiempo,
 } from '../skills/delegar-antigravity/scripts/agy.mjs';
-import { LISTA_1025, LISTA_1110, LISTA_1210, LISTA_1811, LISTA_FUTURA } from './listas-modelos.mjs';
+import { LISTA_1025, LISTA_1110, LISTA_1210, LISTA_1811, LISTA_2411, LISTA_FUTURA } from './listas-modelos.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const script = join(repo, 'skills', 'delegar-antigravity', 'scripts', 'agy.mjs');
@@ -46,6 +53,14 @@ const temporales = [];
 after(() => {
   for (const t of temporales) rmSync(t, { recursive: true, force: true, maxRetries: 3 });
 });
+// Ninguna prueba toca el hub, la cuota, el consumo ni el uso de Claude reales del usuario; la fecha es fija para que
+// los retiros y los precios no cambien el resultado con el calendario. Los procesos hijos heredan estas variables.
+const aislado = realpathSync.native(mkdtempSync(join(tmpdir(), 'agy-aislado-')));
+temporales.push(aislado);
+process.env.DELEGAR_AGY_HUB_DIR = join(aislado, 'sin-hub');
+process.env.DELEGAR_AGY_DATOS = join(aislado, 'datos');
+process.env.DELEGAR_USO_CLAUDE = join(aislado, 'uso-claude.json');
+process.env.DELEGAR_AGY_HOY = '2026-11-24';
 
 function preparar({ git = false } = {}) {
   // En el runner de Windows, tmpdir() da la ruta corta 8.3 (RUNNER~1) y el script usa la larga (realpath).
@@ -368,10 +383,10 @@ test('agy: historial.jsonl guarda una línea por ejecución, con el texto de std
 
 test('agy: con --respaldo, el historial anota cada intento', () => {
   const p = preparar();
-  correr(p, 'cuota', ['--respaldo'], { FAKE_AGY_CUOTA: 'gemini-3.8-flash-medium' });
+  correr(p, 'mudo', ['--respaldo', '--modelo', 'argon-high'], { ...lista(LISTA_1025), FAKE_AGY_MUDOS: 'gemini-4-argon-high' });
   const lineas = readFileSync(join(p.carpeta, 'historial.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(lineas.map((l) => l.estado), ['cuota', 'ok']);
-  assert.match(lineas[0].stderr, /RESOURCE_EXHAUSTED/);
+  assert.deepEqual(lineas.map((l) => l.estado), ['modelo_mudo', 'ok']);
+  assert.match(lineas[0].stderr, /print timeout/);
 });
 
 // --- Registro central de incidencias ---
@@ -395,12 +410,20 @@ test('incidencias: una ejecución ok no se registra; una fallida sí, sin el enc
   assert.doesNotMatch(readFileSync(p.incidencias, 'utf8'), /40871234|Encargo con/);
 });
 
-test('incidencias: con respaldo que termina en ok, igual registra el error de cuota con su texto', () => {
+test('incidencias: con respaldo que termina en ok, igual registra el primer fallo con su texto', () => {
+  const p = preparar();
+  correr(p, 'mudo', ['--respaldo', '--modelo', 'argon-high'], { ...lista(LISTA_1025), FAKE_AGY_MUDOS: 'gemini-4-argon-high' });
+  const [i] = incidencias(p);
+  assert.equal(i.estado, 'ok');
+  assert.deepEqual(i.intentos.map((t) => t.estado), ['modelo_mudo', 'ok']);
+  assert.match(i.stderr, /print timeout/);
+});
+
+test('incidencias: un error de cuota se registra con su texto', () => {
   const p = preparar();
   correr(p, 'cuota', ['--respaldo'], { FAKE_AGY_CUOTA: 'gemini-3.8-flash-medium' });
   const [i] = incidencias(p);
-  assert.equal(i.estado, 'ok');
-  assert.deepEqual(i.intentos.map((t) => t.estado), ['cuota', 'ok']);
+  assert.equal(i.estado, 'cuota');
   assert.match(i.stderr, /RESOURCE_EXHAUSTED/);
 });
 
@@ -516,16 +539,14 @@ test('agy: sin --respaldo, un error de cuota se informa y no cambia de modelo', 
   assert.match(resumen.detalle, /quota/);
 });
 
-test('agy: con --respaldo, recorre la cadena hasta un modelo con cuota', () => {
+test('0.8.0: con --respaldo, una cuota agotada no recorre la cadena: todos los Gemini comparten una', () => {
   const p = preparar();
-  const cadena = cadenaRespaldo('gemini-3.8-flash-medium', LISTA_1110);
-  const agotados = ['gemini-3.8-flash-medium', cadena[0]];
-  const { codigo, resumen, llamadas } = correr(p, 'cuota', ['--respaldo'], { ...lista(LISTA_1110), FAKE_AGY_CUOTA: agotados.join(',') });
-  assert.equal(codigo, 0);
-  assert.equal(resumen.estado, 'ok');
-  assert.equal(resumen.modelo, cadena[1]);
-  assert.deepEqual(resumen.intentos.map((i) => i.estado), ['cuota', 'cuota', 'ok']);
-  assert.equal(llamadas.length, 3);
+  const env = { ...lista(LISTA_2411), FAKE_AGY_CUOTA: 'gemini-4-neon-high' };
+  const { codigo, resumen, llamadas } = correr(p, 'cuota', ['--respaldo', '--modelo', 'potente-high'], env);
+  assert.equal(codigo, 3);
+  assert.equal(resumen.estado, 'cuota');
+  assert.equal(llamadas.length, 1);
+  assert.match(resumen.detalle, /comparten una sola cuota/);
 });
 
 test('agy: con --respaldo y todo agotado, termina en «cuota»', () => {
@@ -793,16 +814,131 @@ test('gamas: el modelo por defecto es rapido-medium y --modelos muestra gamas y 
 
 // --- 0.7.0: tres gamas y xhigh (lista real del 18/11) ---
 
-test('0.7.0: Flash es rápido, Hydrogen medio y Neon potente; Argon solo desempata detrás de Neon', () => {
+test('0.8.0: Hydrogen por defecto y para lo rápido, Neon potente, Carbon máximo; Flash y Argon pasan a su reemplazo', () => {
   assert.equal(gama('hydrogen'), 'medio');
   assert.equal(gama('neon'), 'potente');
-  const r = (pedido, l = LISTA_1811) => resolverModelo(pedido, l).slug;
-  assert.equal(r('rapido-medium'), 'gemini-3.8-flash-medium');
-  assert.equal(r('medio-high'), 'gemini-4-hydrogen-high');
-  assert.equal(r('potente-high'), 'gemini-4-neon-high');
-  assert.equal(r('pro-high'), 'gemini-4-neon-high');
-  assert.equal(r('argon-high'), 'gemini-4-argon-high');
-  assert.equal(r(MODELO_POR_DEFECTO), 'gemini-3.8-flash-medium');
+  assert.equal(gama('carbon'), 'maximo');
+  const r = (pedido, l = LISTA_2411) => resolverModelo(pedido, l);
+  assert.equal(r(MODELO_POR_DEFECTO).slug, 'gemini-4-hydrogen-medium');
+  assert.equal(r('rapido-low').slug, 'gemini-4-hydrogen-low');
+  assert.equal(r('rapido-medium').slug, 'gemini-4-hydrogen-medium');
+  assert.equal(r('medio-high').slug, 'gemini-4-hydrogen-high');
+  assert.equal(r('potente-high').slug, 'gemini-4-neon-high');
+  assert.equal(r('maximo-high').slug, 'gemini-4-carbon-high');
+  assert.equal(r('pro-high').slug, 'gemini-4-neon-high');
+  const argon = r('argon-high');
+  assert.equal(argon.slug, 'gemini-4-neon-high');
+  assert.match(argon.nota, /Argon se retira el 2026-11-30/);
+  assert.equal(r('flash-low').slug, 'gemini-4-hydrogen-low');
+  // Hasta el 29/11, el nombre exacto de lo que se retira sigue valiendo.
+  assert.deepEqual(r('gemini-3.8-flash-high'), { slug: 'gemini-3.8-flash-high', disponible: true });
+  // Con la lista del 18/11 (sin Carbon), rapido-* también es Hydrogen y potente-* es Neon.
+  assert.equal(r('rapido-medium', LISTA_1811).slug, 'gemini-4-hydrogen-medium');
+  assert.equal(r('potente-high', LISTA_1811).slug, 'gemini-4-neon-high');
+  // Sin otro modelo, lo que se retira se usa igual.
+  assert.equal(r('potente-high', LISTA_1025).slug, 'gemini-4-argon-high');
+  assert.equal(r('rapido-medium', LISTA_1210).slug, 'gemini-3.8-flash-medium');
+});
+
+test('0.8.0: Carbon nunca es respaldo ni por defecto; sin Carbon, maximo-* baja a Neon', () => {
+  for (const m of LISTA_2411.filter((x) => /^gemini-4-(neon|hydrogen)/.test(x))) {
+    assert.ok(!cadenaRespaldo(m, LISTA_2411).some((s) => /carbon/.test(s)), m);
+  }
+  assert.deepEqual(cadenaRespaldo('gemini-4-carbon-high', LISTA_2411), ['gemini-4-neon-high', 'gemini-4-hydrogen-high']);
+  const sinCarbon = resolverModelo('maximo-high', LISTA_1811);
+  assert.equal(sinCarbon.slug, 'gemini-4-neon-high');
+  assert.match(sinCarbon.nota, /potente-high/);
+  assert.equal(resolverModelo('carbon-medium', LISTA_2411).slug, 'gemini-4-carbon-medium');
+});
+
+test('0.8.0: orquestador y orquestador-maximo, con plazos de lo potente', () => {
+  assert.deepEqual(resolverModelo('orquestador', LISTA_2411), { slug: 'gemini-pro-orchestrator-neon', disponible: true });
+  assert.deepEqual(resolverModelo('orquestador-maximo', LISTA_2411), { slug: 'gemini-pro-orchestrator', disponible: true });
+  assert.equal(resolverModelo('orquestador-maximo', LISTA_1811).disponible, false);
+  assert.equal(plazoInicial('gemini-pro-orchestrator-neon'), 2700);
+  assert.equal(topeDeTiempo('gemini-pro-orchestrator'), 14400);
+  assert.equal(topeDeTiempo('gemini-4-carbon-high'), 14400);
+});
+
+test('0.8.0: retiros por fecha: el 29/11 aún están, el 30/11 se quitan de la lista', () => {
+  assert.equal(retirado('gemini-3.8-flash-high', '2026-11-29'), false);
+  assert.equal(retirado('gemini-3.8-flash-high', '2026-11-30'), true);
+  assert.equal(retirado('gemini-4-argon-low', '2026-12-05'), true);
+  assert.equal(retirado('gemini-pro-orchestrator-argon', '2026-11-30'), true);
+  assert.equal(retirado('gpt-oss-120b-medium', '2026-11-30'), true);
+  assert.equal(retirado('gemini-4-neon-high', '2027-01-01'), false);
+  assert.equal(retirado('gemini-pro-orchestrator-neon', '2026-11-30'), false);
+  for (const [dia, cuantos] of [['2026-11-29', 27], ['2026-11-30', 19]]) {
+    const p = preparar();
+    const { resumen } = correr(p, 'exito', ['--modelos'], { ...lista(LISTA_2411), DELEGAR_AGY_HOY: dia }, { encargo: null });
+    assert.equal(Object.values(resumen.grupos).flat().length, cuantos, dia);
+    if (dia === '2026-11-30') {
+      assert.match(resumen.avisos.join(' '), /retirados a la fecha/);
+      assert.equal(resumen.alias['argon-high'], undefined);
+      assert.equal(resumen.alias['gpt-oss'], 'no disponible');
+      const sinRetirados = LISTA_2411.filter((m) => !retirado(m, dia));
+      assert.equal(resolverModelo('argon-high', sinRetirados).nota, 'sin Argon en agy models: uso potente-high');
+    }
+  }
+});
+
+test('0.8.0: precios por fecha: Carbon dobla su costo el 1/12 y el × Hydrogen cambia ese día', () => {
+  const usage = { input_tokens: 100000, output_tokens: 2000, thinking_tokens: 8000, cache_read_tokens: 0 };
+  assert.equal(costoUsd('gemini-4-carbon-high', usage, '2026-11-30'), 0.3);
+  assert.equal(costoUsd('gemini-4-carbon-high', usage, '2026-12-01'), 0.6);
+  assert.equal(costoUsd('gemini-4-hydrogen-medium', usage, '2026-12-01'), 0.225);
+  // El Orchestrator se cuenta al precio de quien planifica; uno sin precio no da costo.
+  assert.equal(costoUsd('gemini-pro-orchestrator-neon', usage), costoUsd('gemini-4-neon-high', usage));
+  assert.equal(costoUsd('claude-sonnet-5-5-low', usage), null);
+  // La caché se cobra aparte y no dos veces.
+  assert.equal(costoUsd('gemini-4-neon-low', { input_tokens: 100000, cache_read_tokens: 100000 }), 0.015);
+  assert.match(fechasProximas(14, '2026-11-24').join('\n'), /2026-12-01: carbon pasa de 2\/10 a 4\/20/);
+  assert.match(fechasProximas(14, '2026-11-24').join('\n'), /2026-11-30: se retiran .*gemini-4-argon/);
+  assert.equal(fechasProximas(14, '2026-12-02').some((f) => /carbon/.test(f)), false);
+});
+
+test('0.8.0: errores de red y de arranque del backend son transitorios', () => {
+  for (const stderr of [
+    'error: There was a network issue connecting to the server, please try again.',
+    'error: failed to start conversation: backend returned an empty conversation id',
+  ]) {
+    assert.equal(clasificar({ json: null, stderr, codigo: 1, fallosLog: [] }).estado, 'transitorio', stderr);
+  }
+});
+
+test('0.8.0: el mensaje prohíbe las herramientas MCP que el encargo no nombra, en los tres modos', () => {
+  for (const modo of ['lectura', 'plan', 'edicion']) {
+    const args = construirArgs({ encargo: 'e.md', modelo: 'gemini-4-hydrogen-medium', modo });
+    assert.match(args[args.indexOf('-p') + 1], /No uses herramientas MCP salvo las que nombra el encargo/, modo);
+  }
+});
+
+test('0.8.0: motivos para revisar la skill', () => {
+  assert.deepEqual(motivosRevision({ modelos: LISTA_2411, etiquetas: {}, versionAgy: AGY_PROBADA, dia: FECHA_VERSION }), []);
+  const motivos = motivosRevision({
+    modelos: [...LISTA_2411.filter((m) => m !== 'gemini-4-neon-low'), 'gemini-5-boron-high'],
+    etiquetas: { 'gemini-4-neon-high': { retiro: '2027-01-15' } },
+    versionAgy: '1.6.0',
+    dia: '2027-01-02',
+  }).join('\n');
+  assert.match(motivos, /modelos nuevos en agy: gemini-5-boron-high/);
+  assert.match(motivos, /ya no están en agy: gemini-4-neon-low/);
+  assert.match(motivos, /sin precio en PRECIOS: gemini-5-boron-high/);
+  assert.match(motivos, /retiros que la skill no tiene en RETIROS: gemini-4-neon-high \(2027-01-15\)/);
+  assert.match(motivos, /agy 1\.6\.0/);
+  assert.match(motivos, /días sin una versión nueva/);
+  // Lo retirado a la fecha no cuenta como «ya no está».
+  assert.equal(motivosRevision({ modelos: LISTA_2411.filter((m) => !retirado(m, '2026-12-01')), dia: '2026-12-01' }).length, 0);
+});
+
+test('0.8.0: fechaDeRetiro lee las etiquetas reales de Antigravity', () => {
+  assert.equal(fechaDeRetiro('Use Hydrogen for better quality with lower quota usage. Leaving on Nov 30.', '2026-11-24'), '2026-11-30');
+  assert.equal(fechaDeRetiro('GPT-OSS will be removed from Antigravity on November 30, 2026.'), '2026-11-30');
+  assert.equal(fechaDeRetiro('For most deep reasoning and complex problems'), null);
+  assert.equal(fechaDeRetiro(undefined), null);
+  // Sin año, una fecha que ya pasó hace más de 60 días es del año siguiente; una reciente, de este.
+  assert.equal(fechaDeRetiro('Leaving on Jan 15.', '2026-12-10'), '2027-01-15');
+  assert.equal(fechaDeRetiro('Leaving on Nov 30.', '2026-12-05'), '2026-11-30');
 });
 
 test('0.7.0: xhigh solo se usa si se pide y se reconoce en alias, nombres y --effort', () => {
@@ -830,17 +966,22 @@ test('0.7.0: Carbon no entra por gama, pero sí por su nombre; los Orchestrator,
   assert.deepEqual(resolverModelo('gemini-pro-orchestrator-neon', LISTA_1811), { slug: 'gemini-pro-orchestrator-neon', disponible: true });
 });
 
-test('0.7.0: el respaldo de Neon es Argon, luego Hydrogen y luego Flash; sin gamas altas, rapido-high', () => {
-  assert.deepEqual(cadenaRespaldo('gemini-4-neon-high', LISTA_1811), ['gemini-4-argon-high', 'gemini-4-hydrogen-high', 'gemini-3.8-flash-high']);
-  assert.deepEqual(cadenaRespaldo('gemini-4-neon-xhigh', LISTA_1811), [
-    'gemini-4-argon-high',
-    'gemini-4-neon-high',
-    'gemini-4-hydrogen-xhigh',
-    'gemini-3.8-flash-high',
-  ]);
-  assert.deepEqual(cadenaRespaldo('gemini-4-hydrogen-high', LISTA_1811), ['gemini-3.8-flash-high']);
-  assert.deepEqual(cadenaRespaldo('gemini-4-argon-high', LISTA_1811), ['gemini-4-hydrogen-high', 'gemini-3.8-flash-high']);
-  for (const pedido of ['medio-medium', 'potente-xhigh', 'hydrogen-high', 'neon-low']) {
+test('0.8.0: el respaldo de Neon es Hydrogen (ya no Argon); sin Hydrogen, medio-* usa el rápido del mismo nivel', () => {
+  assert.deepEqual(cadenaRespaldo('gemini-4-neon-high', LISTA_2411), ['gemini-4-hydrogen-high']);
+  assert.deepEqual(cadenaRespaldo('gemini-4-neon-xhigh', LISTA_2411), ['gemini-4-neon-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high']);
+  // Sin Flash, rapido-high también es Hydrogen High: el respaldo de Hydrogen High es Hydrogen Medium (revisión de Hydrogen).
+  assert.deepEqual(cadenaRespaldo('gemini-4-hydrogen-high', LISTA_2411), ['gemini-4-hydrogen-medium']);
+  // Un nivel que la gama no tiene baja primero a High en la misma gama; un Orchestrator ausente no se lista.
+  assert.equal(resolverModelo('maximo-xhigh', LISTA_2411).slug, 'gemini-4-carbon-high');
+  assert.equal(resolverModelo('maximo-max', LISTA_2411).slug, 'gemini-4-carbon-high');
+  assert.deepEqual(cadenaRespaldo('gemini-4-hydrogen-medium', LISTA_2411), ['gemini-4-hydrogen-high']);
+  // Con la lista del 18/11, lo rápido que queda detrás de Hydrogen es Flash.
+  assert.deepEqual(cadenaRespaldo('gemini-4-neon-high', LISTA_1811), ['gemini-4-hydrogen-high']);
+  assert.deepEqual(cadenaRespaldo('gemini-4-argon-high', LISTA_1025), ['gemini-3.8-flash-high']);
+  const medio = resolverModelo('medio-medium', LISTA_1210);
+  assert.equal(medio.slug, 'gemini-3.8-flash-medium');
+  assert.match(medio.nota, /rapido-medium/);
+  for (const pedido of ['potente-xhigh', 'hydrogen-high', 'neon-low']) {
     const r = resolverModelo(pedido, LISTA_1210);
     assert.equal(r.slug, 'gemini-3.8-flash-high', pedido);
     assert.match(r.nota, /rapido-high/, pedido);
@@ -852,11 +993,9 @@ test('0.7.0: casos borde de la segunda opinión de Hydrogen', () => {
   const sinPotentes = ['gemini-4-hydrogen-high', 'gemini-4-hydrogen-low', 'gemini-3.8-flash-high'];
   assert.equal(resolverModelo('potente-high', sinPotentes).slug, 'gemini-4-hydrogen-high');
   assert.match(resolverModelo('neon-low', sinPotentes).nota, /medio-low/);
-  // Argon no se repite si ya entró como versión anterior.
+  // Una versión anterior de la misma familia va primero y no se repite.
   const argonViejo = ['gemini-4-argon-high', 'gemini-4-hydrogen-high', 'gemini-3.8-flash-high'];
-  assert.deepEqual(cadenaRespaldo('gemini-4.5-argon-high', argonViejo), argonViejo);
-  // Con Argon xhigh, el respaldo de Neon xhigh es Argon xhigh.
-  assert.equal(cadenaRespaldo('gemini-4-neon-xhigh', ['gemini-4-argon-xhigh', 'gemini-4-argon-high'])[0], 'gemini-4-argon-xhigh');
+  assert.deepEqual(cadenaRespaldo('gemini-4.5-argon-high', argonViejo), ['gemini-4-argon-high', 'gemini-4-hydrogen-high']);
   // Un nombre exacto vale aunque no haya lista; una familia compuesta con Carbon tampoco entra por gama.
   assert.deepEqual(resolverModelo('gemini-pro-orchestrator-neon', null), { slug: 'gemini-pro-orchestrator-neon' });
   assert.equal(resolverModelo('potente-high', ['gemini-5-carbon-pro-high', 'gemini-4-neon-high']).slug, 'gemini-4-neon-high');
@@ -867,12 +1006,19 @@ test('0.7.0: casos borde de la segunda opinión de Hydrogen', () => {
   ]);
 });
 
-test('0.7.0: --modelos muestra las tres gamas', () => {
+test('0.8.0: --modelos muestra las cuatro gamas, el precio de hoy, los retiros y los próximos cambios', () => {
   const p = preparar();
-  const { resumen } = correr(p, 'exito', ['--modelos'], lista(LISTA_1811), { encargo: null });
-  assert.deepEqual(resumen.gamas, { potente: ['neon', 'argon'], medio: ['hydrogen'], rapido: ['flash'] });
+  const { resumen } = correr(p, 'exito', ['--modelos'], lista(LISTA_2411), { encargo: null });
+  assert.deepEqual(resumen.gamas, { potente: ['neon', 'argon'], maximo: ['carbon'], medio: ['hydrogen'], rapido: ['flash'] });
   assert.equal(resumen.alias['medio-medium'], 'gemini-4-hydrogen-medium');
   assert.equal(resumen.alias['potente-xhigh'], 'gemini-4-neon-xhigh');
+  assert.equal(resumen.alias['maximo-high'], 'gemini-4-carbon-high');
+  assert.equal(resumen.alias.orquestador, 'gemini-pro-orchestrator-neon');
+  assert.match(resumen.familias.carbon, /maximo · USD 2\/10 por millón \(1\.3× Hydrogen\)/);
+  assert.match(resumen.familias.flash, /se retira el 2026-11-30/);
+  assert.match(resumen.proximas.join('\n'), /2026-12-01: carbon/);
+  const despues = correr(preparar(), 'exito', ['--modelos'], { ...lista(LISTA_2411), DELEGAR_AGY_HOY: '2026-12-01' }, { encargo: null }).resumen;
+  assert.match(despues.familias.carbon, /USD 4\/20 por millón \(2\.7× Hydrogen\)/);
 });
 
 // --- 0.4.0: fallos vistos en el uso real ---
