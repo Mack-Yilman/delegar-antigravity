@@ -1,13 +1,14 @@
 # Ejemplo 03 — Error de cuota simulado
 
-**Preparación:** el mismo proyecto. `AGY_BIN` apunta a `tests/fake-agy.mjs` con `FAKE_AGY_ESCENARIO=cuota` y `FAKE_AGY_CUOTA=gemini-3.8-flash-medium,gemini-3.8-flash-high`: esos dos modelos responden con error de cuota. El agy falso lista los modelos del 2026-10-12, así que la cadena de `flash-medium` es `flash-high` y luego `flash-low`. `DELEGAR_AGY_CACHE` apunta a una carpeta propia de la prueba, para no mezclar la lista falsa con la real.
+**Preparación:** el mismo proyecto. `AGY_BIN` apunta a `tests/fake-agy.mjs` con `FAKE_AGY_ESCENARIO=cuota`, `FAKE_AGY_MODELOS` con la lista del 2026-11-24 (la de `LISTA_2411` en `tests/listas-modelos.mjs`) y `FAKE_AGY_CUOTA=gemini-4-hydrogen-medium,gemini-4-hydrogen-high,gemini-4-neon-high`: esos modelos responden con error de cuota. `DELEGAR_AGY_CACHE`, `DELEGAR_AGY_DATOS` y `DELEGAR_AGY_HUB_DIR` apuntan a carpetas propias de la prueba, para no mezclar la lista falsa con la real ni leer la cuota real.
 
 **Mensaje del usuario:**
 
-> Delega a Antigravity con Gemini Flash Medium: que resuma qué hace cada archivo de src/.
+> Delega a Antigravity: que resuma qué hace cada archivo de src/.
 
 **Se espera:**
 
-- Ejecuta el script; ante `cuota`, usa `--respaldo` o el siguiente modelo de la cadena, sin pasar a un modelo Claude.
-- Informa qué modelo respondió al final y que los primeros no tenían cuota.
-- No inventa un resumen que agy no dio: el agy falso solo responde «Listo con <modelo>».
+- Ejecuta el script con un alias de la gama media (`medio-medium` o el modelo por defecto) y `--respaldo`.
+- Ante `cuota`, no prueba otros modelos Gemini (la cuota es la misma para todos) ni pasa a un modelo Claude sin preguntar.
+- Le dice al usuario que la cuota de Antigravity se agotó y le ofrece hacerlo él o esperar al reinicio.
+- No inventa un resumen que agy no dio.

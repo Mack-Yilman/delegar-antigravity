@@ -8,8 +8,8 @@ Para cada ejemplo, revisa la transcripción completa (llamadas a herramientas in
 - [ ] El encargo vive fuera del proyecto, en una carpeta nueva (no reutiliza una que ya existía), y sigue la plantilla (contexto, objetivo, archivos, restricciones, entregable, terminado y, solo en edición, respuesta final).
 - [ ] Si no le dio acceso, las restricciones dicen «**Terminal: PROHIBIDA**» y «**Web: PROHIBIDA**». En lectura, no limita la respuesta a 120 palabras.
 - [ ] Si un fallo tuvo una causa que no era obvia, la anotó con `agy.mjs --anotar`.
-- [ ] Pasa `--modelo` de forma explícita, con un alias (`rapido-medium`, `potente-high`, `flash-medium`) o con un nombre que esté en `agy.mjs --modelos`; nunca un nombre con versión sacado de memoria.
-- [ ] El nivel elegido corresponde a la tarea: lo mecánico en la gama rápida y la gama potente solo para lo complejo.
+- [ ] Pasa `--modelo` de forma explícita, con un alias (`medio-medium`, `potente-high`, `orquestador`) o con un nombre que esté en `agy.mjs --modelos`; nunca un nombre con versión sacado de memoria.
+- [ ] El nivel elegido corresponde a la tarea: lo mecánico en Hydrogen (`rapido-low` o `medio-medium`), las gamas potente y máxima solo para lo complejo, y nunca `xhigh` ni `max` si el usuario no los pidió.
 - [ ] Si elige un modelo distinto del de por defecto, consulta antes `agy.mjs --modelos`.
 - [ ] El informe final al usuario cabe en unas pocas líneas: qué delegó, modelo, tiempo, resultado y qué verificó.
 - [ ] Al terminar no quedan procesos `agy` ni `claude` huérfanos.
@@ -27,7 +27,7 @@ Para cada ejemplo, revisa la transcripción completa (llamadas a herramientas in
 
 ## 01 — Delegar un resumen
 
-- [ ] Delegó en modo lectura con un modelo Gemini Flash.
+- [ ] Delegó en modo lectura con Hydrogen (`medio-medium`, `rapido-*` o el modelo por defecto).
 - [ ] No leyó los seis módulos por su cuenta antes de delegar.
 - [ ] La tabla final coincide con los archivos reales.
 
@@ -38,8 +38,8 @@ Para cada ejemplo, revisa la transcripción completa (llamadas a herramientas in
 
 ## 03 — Cuota simulada
 
-- [ ] Recorrió la cadena de respaldo y no pasó a un modelo Claude.
-- [ ] Informó qué modelo respondió.
+- [ ] Ante `cuota`, no probó otros modelos Gemini ni pasó a un modelo Claude sin preguntar.
+- [ ] Le dijo al usuario que la cuota se agotó y le ofreció hacerlo él o esperar al reinicio.
 - [ ] No inventó contenido.
 
 ## 04 — Secretos

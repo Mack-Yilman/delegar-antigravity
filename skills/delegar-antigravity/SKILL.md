@@ -29,7 +29,7 @@ Delegar ahorra cuando lo que agy va a leer o escribir es mucho mayor que lo que 
 
 La tabla sirve para decidir por tu cuenta. **Si el usuario pide delegar** («delega esto», «usa agy»), delega aunque la tarea sea pequeña o dependa de la conversación: él decidió gastar la cuota de Antigravity en lugar de la tuya. Como mucho, coméntale en una línea que habría salido más barato hacerlo tú. Las dos últimas filas son la excepción: datos sensibles y acciones que requieren autorización.
 
-Si el usuario no pidió delegar y la tarea encaja en las filas de arriba, propónlo en una línea («Esto es grande y mecánico; ¿lo delego a Antigravity con Gemini Flash?») y espera su respuesta.
+Si el usuario no pidió delegar y la tarea encaja en las filas de arriba, propónlo en una línea («Esto es grande y mecánico; ¿lo delego a Antigravity con Hydrogen?») y espera su respuesta.
 
 **Datos sensibles, aunque el usuario pida usar agy.** agy puede leer **cualquier** archivo de su espacio de trabajo (la carpeta `--cwd` y cada `--add-dir`), aunque el encargo se lo prohíba. Antes de ejecutar, mira qué hay ahí, no solo los archivos del encargo. Si hay datos de pacientes o datos personales (nombres con DNI, diagnósticos, historias clínicas), no ejecutes todavía: dile qué datos son, que saldrán a los servidores de Google, y pregunta si quiere enviarlos igual, anonimizarlos antes o que lo hagas tú. Que el usuario diga «usa agy» no basta: quizá no sabe qué contiene el archivo. Tampoco decidas por tu cuenta que los datos son ficticios o de prueba: pregúntalo.
 
@@ -37,45 +37,54 @@ Con secretos (`.env`, `.dev.vars`, claves, credenciales), el script se detiene s
 
 ## Elegir modelo
 
-Antigravity cambia los modelos sin aviso: un día desaparece Gemini Pro y otro llega una familia nueva (Argon) o una versión nueva, y lo mismo pasa con Claude y GPT. Por eso no elijas por nombre ni por versión: elige por **gama** y **nivel de esfuerzo**, y el script los traduce al mejor modelo que haya hoy.
+Antigravity cambia los modelos sin aviso: un día desaparece Gemini Pro y otro llega una familia nueva, y lo mismo pasa con Claude y GPT. Por eso no elijas por nombre ni por versión: elige por **gama** y **nivel de esfuerzo**, y el script los traduce al mejor modelo que haya hoy. Lo que Google anuncia que se retira deja de elegirse solo, y desde su fecha el script lo quita de la lista.
 
-- **Gama `rapido`:** las familias Flash (y cualquier `lite` o `nano` futura). La más barata: para lo mecánico.
-- **Gama `medio`:** Hydrogen. Para el trabajo de agente cotidiano: editar, correr pruebas y comandos, revisiones de criterio. Rinde mucho más que Flash con terminal y cuesta el doble por token.
-- **Gama `potente`:** las demás familias Gemini (hoy Neon, con Argon detrás; mañana la que llegue). Para lo complejo. Nunca elige un modelo solo para planes superiores (Carbon): ese, solo por su nombre.
-- **Nivel:** `low`, `medium`, `high` y, solo en `medio` y `potente`, `xhigh` (el «Extra» de Antigravity). Más nivel es más razonamiento, más minutos y más cuota.
+**La cuota es una sola y se gasta por costo.** Todos los modelos Gemini comparten un límite de 5 h y uno semanal (los de Claude y GPT tienen otros), y cada tarea consume en proporción al precio de sus tokens. Por eso el modelo correcto es el más barato **por tarea** que la haga bien, no el más barato por token: uno que gasta pocos tokens y acierta a la primera sale mejor que uno barato que da vueltas.
 
-Antes de elegir, si dudas de qué hay hoy, consulta la lista vigente (no gasta tokens; se guarda unas horas y `--refrescar-modelos` la vuelve a pedir):
+**Antes de cualquier modelo, el nivel 0:** si lo mecánico se resuelve con un script determinista (contar, comparar, renombrar con un patrón, convertir formatos), escríbelo tú. No gasta cuota y no se equivoca.
+
+| Si la tarea es… | Alias | Gama |
+|---|---|---|
+| Mecánica y corta: extraer, listar, formatear | `rapido-low` | Hydrogen Low |
+| Editar, correr pruebas, resumir, renombrar con criterio (la mayoría) | `medio-medium` (por defecto) | Hydrogen Medium |
+| Revisión de criterio de un diff o un plan, depuración de varios pasos | `medio-high` | Hydrogen High |
+| Compleja pero acotada: un error sutil en pocos archivos, una decisión de diseño | `potente-medium` | Neon |
+| Difícil: arquitectura, auditoría, revisión profunda de un diff grande | `potente-high` | Neon |
+| Larga y de varios pasos con terminal: construir algo con sus pruebas, una migración | `orquestador` | Neon planifica, Hydrogen ejecuta |
+| La más difícil y larga, o algo que `potente-high` ya no resolvió | `maximo-medium` o `maximo-high` | Carbon |
+| Lo anterior, larga y con terminal | `orquestador-maximo` | Carbon planifica, Hydrogen ejecuta |
+| El usuario pide un modelo Claude dentro de agy, o Gemini falló dos veces | `sonnet-low` o `sonnet-medium`, y avisa: van en otra cuota, más limitada | — |
+| Solo si el usuario lo pide | `opus` | — |
+
+- **Precio de hoy:** `--modelos` muestra, por familia, la gama, el precio por millón de tokens, cuántas veces cuesta frente a Hydrogen, lo que dice Google de cada modelo y las fechas de retiro y cambio de precio de los próximos 30 días. Míralo antes de elegir entre dos gamas: los precios cambian con la fecha (Carbon dobla el suyo el 1 de diciembre de 2026) y la skill no los fija en este texto.
+- **Carbon (`maximo-*`):** el más capaz y el que más cuota gasta: en una misma revisión gastó 6 veces lo de Hydrogen High y 2,3 veces lo de Neon High, y los cuatro modelos encontraron los mismos errores. Úsalo por tu cuenta solo si la tarea es larga y difícil de verdad, o si Neon High ya falló en ella; nunca para lo mecánico ni como primera opción. El script nunca lo elige por defecto ni como respaldo.
+- **Orchestrator (`orquestador`, `orquestador-maximo`):** rinde en tareas largas con terminal, porque deja lo rutinario a Hydrogen; en una lectura o una revisión de una sola pasada no aporta. Tiene un esfuerzo fijo: no lleva nivel.
+- **`xhigh` y `max`, solo si el usuario los pide** (`medio-xhigh`, `potente-xhigh`). Son los niveles más caros y una tarea puede gastar en un rato la cuota de una cuenta Pro. Un alias sin nivel nunca los elige, ni el respaldo sube a ellos.
+- Los alias de familia también valen (`hydrogen-high`, `neon-high`, `carbon-high`), igual que un nombre exacto de la lista. Los de familias que se retiran (`flash-*`, `argon-*`, `pro-*`) pasan a su gama con el mismo nivel y el resumen lo dice. Pasa siempre `--modelo`: sin él, el script usa `medio-medium`, nunca el modelo por defecto de agy (que puede ser un modelo Claude).
 
 ```bash
 node <carpeta de esta skill>/scripts/agy.mjs --modelos
 ```
 
-Muestra los modelos por familia, qué familias hay en cada gama y a qué modelo se resuelve cada alias. Pasa siempre `--modelo` con un alias o con un nombre exacto de la lista, y el resumen dice cuál usó. Sin `--modelo`, el script usa `rapido-medium`, nunca el modelo por defecto de agy (que puede ser un modelo Claude con cuota más corta).
-
-| Si la tarea es… | Alias |
-|---|---|
-| Mecánica y corta: extraer, listar, formatear | `rapido-low` |
-| Mecánica con algo de criterio: resumir, renombrar en varios archivos | `rapido-medium` (por defecto) |
-| Intermedia sin terminal: borradores, búsquedas con explicación, revisar textos | `rapido-high` |
-| Editar código, correr pruebas o comandos, refactorizaciones con criterio | `medio-medium` |
-| Revisión de criterio de un diff o un plan, depuración con varios pasos | `medio-high` |
-| Compleja pero acotada: un error sutil en pocos archivos, una decisión de diseño | `potente-medium` |
-| La más difícil: arquitectura, auditoría, revisión profunda de un diff grande | `potente-high` |
-| Un problema profundo de muchos pasos que ya falló en `high`, o si el usuario lo pide | `medio-xhigh` o `potente-xhigh` |
-| Gemini falló dos veces, o el usuario pide un modelo Claude dentro de agy | `sonnet-low` o `sonnet-medium`, y avisa: gastan una cuota más limitada |
-| Solo si el usuario lo pide | `opus`, `gpt-oss` |
-
-Los alias de familia también valen (`flash-high`, `hydrogen-xhigh`, `neon-high`, `argon-high`, `pro-high`), igual que un nombre exacto de la lista. Si la familia ya no existe, el script usa su gama con el mismo nivel y el resumen lo dice; sin ningún modelo potente, `potente-*` pasa a la gama media, y sin gama media, a `rapido-high`.
-
 **Regula el esfuerzo:**
 
-- Empieza por el nivel más bajo que alcance para la tarea. Un nivel alto no compensa un encargo vago: primero aclara el encargo.
-- **`xhigh` no es para todo:** es el nivel más caro y lento. Úsalo solo si la tarea exige razonar muchos pasos seguidos (un error que nadie encontró, un diseño con muchas restricciones) y ya falló en `high`, o si el usuario lo pide. Un alias sin nivel nunca lo elige.
-- Si la respuesta quedó superficial (no vio el error, resumió en vez de analizar, dejó puntos sin responder), sube un nivel, o de gama (`rapido-high` → `medio-high` → `potente-medium`), en una tarea nueva con el encargo corregido.
+- Empieza por el nivel más bajo que alcance. Un nivel alto no compensa un encargo vago: primero aclara el encargo.
+- Si la respuesta quedó superficial (no vio el error, resumió en vez de analizar), sube un nivel o de gama (`medio-high` → `potente-medium` → `potente-high`), en una tarea nueva con el encargo corregido.
 - Si dio `sin_avance` o `modelo_mudo`, no subas: acota (menos archivos, funciones nombradas, un máximo de hallazgos) o baja de gama.
-- La gama potente tarda de 5 a más de 20 min y a veces se queda muda: úsala solo cuando el criterio importa más que el tiempo, y siempre con `--respaldo`.
+- Las gamas potente y máxima tardan de 5 a más de 20 min: úsalas cuando el criterio importa más que el tiempo, y con `--respaldo`.
 
-La regla de respaldo, los tiempos medidos, los textos de error reales y la lista observada en cada fecha están en [references/modelos.md](references/modelos.md). Léelo si un modelo falla o si dudas entre dos.
+**Vigila la cuota.** Al empezar un trabajo con varias delegaciones, y si el usuario pregunta cómo va:
+
+```bash
+node <carpeta de esta skill>/scripts/agy.mjs --cuota
+```
+
+Da el % usado de cada ventana de Antigravity y cuándo se reinicia (si la app o el IDE de Antigravity están abiertos), lo gastado por modelo en las últimas 5 h y 7 días y, si el usuario lo configuró, el uso de Claude Code (contexto, 5 h y semana). Cada resumen trae además lo que gastó esa delegación. Con eso decide:
+
+- Si la ventana de 5 h de Gemini pasa el 80 %, o la semanal va más rápido que los días de la semana, baja de gama, agrupa encargos o hazlo tú.
+- Si la cuota de Claude Code es la que está alta, delega más; si la de Gemini es la alta, delega menos. La semana alcanza para unas 4 ventanas de 5 h llenas: no gastes una ventana entera en una sola tarea si no lo vale.
+
+La regla de respaldo, los precios con sus fechas, los tiempos y el costo medidos, los textos de error reales y la lista observada en cada fecha están en [references/modelos.md](references/modelos.md). Léelo si un modelo falla o si dudas entre dos.
 
 ## Flujo
 
@@ -118,6 +127,8 @@ que está denegada, y la tarea queda incompleta>
   puedes usarla para <qué>. El script te dice cómo pedir lo que no tengas».>
 - **Web: PROHIBIDA.** No abras URL ni busques en internet: una URL denegada también
   deja vacía tu respuesta. Trabaja solo con los archivos de la lista.
+- **MCP: PROHIBIDO.** No uses ninguna herramienta MCP <salvo: las que nombre la tarea>:
+  una sola sin permiso deja vacía tu respuesta.
 - Lee solo los archivos de la lista; no busques otros.
 - No toques archivos fuera de la lista, ni .env, claves, credenciales o datos personales.
 <Si debe crear archivos: «Las carpetas existen: crea los archivos directamente, sin comprobarlas».>
@@ -145,16 +156,16 @@ Sin los flags de acceso, la terminal y la web están denegadas para agy, y basta
 ### 2. Ejecutar con el script
 
 ```bash
-node <carpeta de esta skill>/scripts/agy.mjs --encargo <carpeta>/encargo.md --cwd <proyecto> --modelo rapido-medium --modo lectura --respaldo
+node <carpeta de esta skill>/scripts/agy.mjs --encargo <carpeta>/encargo.md --cwd <proyecto> --modelo medio-medium --modo lectura --respaldo
 ```
 
 - `--modo lectura` (por defecto) le pide no tocar archivos. La respuesta completa queda en `respuesta.md`, aunque sea larga. agy no garantiza la solo lectura (ningún modo de agy lo impide), así que el script avisa con `edito_en_lectura` si cambió algo.
 - `--modo edicion` le permite crear y editar archivos en el proyecto y en la carpeta del encargo.
 - `--modo plan` le pide pasos, archivos y los comandos que necesitará, sin tocar nada (ver «Trabajar con agy como subagente»).
 - `--acceso sandbox`, `--terminal "<comando>"` y `--web <dominio>` le dan acceso, solo para esa llamada.
-- `--respaldo` reintenta una vez un fallo pasajero de la plataforma y cambia a otro modelo Gemini si hay error de cuota, si el modelo ya no existe o si se quedó mudo. Úsalo salvo que el usuario haya pedido un modelo concreto.
+- `--respaldo` reintenta una vez un fallo pasajero de la plataforma y cambia a otro modelo Gemini si el modelo ya no existe o si se quedó mudo. Ante un error de cuota no cambia: la cuota es la misma para todos los Gemini. Úsalo salvo que el usuario haya pedido un modelo concreto.
 - `--sin-avance <s>` y `--timeout <s>`: normalmente no los pongas (ver «Tareas largas»).
-- `--esfuerzo low|medium|high|xhigh` reemplaza el nivel que trae el nombre del modelo.
+- `--esfuerzo low|medium|high|xhigh|max` reemplaza el nivel que trae el nombre del modelo (`xhigh` y `max`, solo si el usuario los pide).
 - `--esquema <archivo.json>` pide una respuesta estructurada: el JSON queda en `respuesta.json`, aunque agy lo haya escrito dentro del texto. Si no trae un JSON válido, el estado es `incompleto`.
 - `--add-dir <carpeta>` da acceso a otra carpeta y `--seco` muestra el comando sin ejecutarlo.
 
@@ -163,8 +174,8 @@ El script cierra la entrada estándar, guarda la salida en archivos, corta el pr
 **Tareas largas.** Deja que agy tome el tiempo que necesite: el script lo vigila por ti, sin gastar tokens y sin interrumpirlo.
 
 - **Ejecútalo en segundo plano** si la tarea puede pasar de un par de minutos y tu entorno lo permite, y sigue con otra cosa. Un comando en primer plano suele tener su propio límite, y al vencer también corta a agy.
-- **No pongas un `--timeout` corto para asegurarte:** es lo que corta trabajo sano. Sin ese flag solo hay un tope contra bucles (2 h en las gamas rápida y media, y 4 h en la potente o con `xhigh`); `--timeout 0` lo quita.
-- **El corte real es la falta de avance:** cada 30 s, el script mira si agy dio algún paso nuevo. El plazo empieza según el modelo (de 15 min con `rapido-low` o `medio-low` a 45 con `potente` o `xhigh`) y crece hasta 3 veces el silencio más largo visto, así que una tarea con pausas largas gana margen sola. Fíjalo con `--sin-avance <s>` solo si tienes un motivo, y `0` lo desactiva.
+- **No pongas un `--timeout` corto para asegurarte:** es lo que corta trabajo sano. Sin ese flag solo hay un tope contra bucles (2 h en las gamas rápida y media, y 4 h en la potente, la máxima, el Orchestrator o con `xhigh`); `--timeout 0` lo quita.
+- **El corte real es la falta de avance:** cada 30 s, el script mira si agy dio algún paso nuevo. El plazo empieza según el modelo (de 15 min con `rapido-low` o `medio-low` a 45 con `potente`, `maximo`, el Orchestrator o `xhigh`) y crece hasta 3 veces el silencio más largo visto, así que una tarea con pausas largas gana margen sola. Fíjalo con `--sin-avance <s>` solo si tienes un motivo, y `0` lo desactiva.
 - **Para saber cómo va,** si el usuario pregunta o tu entorno no te avisa al terminar (cada unos 15 min basta):
 
 ```bash
@@ -178,7 +189,7 @@ Evita encargos que obliguen a muchos reemplazos uno a uno en un archivo grande: 
 **Varios encargos a la vez.** Crea una carpeta con una subcarpeta por encargo, cada una con su `encargo.md` (y los archivos que deba leer), y lánzalos con una sola llamada:
 
 ```bash
-node <carpeta de esta skill>/scripts/agy.mjs --lote <carpeta> --modelo rapido-high --respaldo --paralelo 5
+node <carpeta de esta skill>/scripts/agy.mjs --lote <carpeta> --modelo medio-medium --respaldo --paralelo 5
 ```
 
 Corre hasta 5 a la vez, cada uno en su subcarpeta como espacio de trabajo (o en el `--cwd` común que pases) y con las mismas protecciones. Devuelve solo una tabla con el estado de cada uno y deja en cada subcarpeta su `respuesta.md` y su `resumen.json`. Un `--esquema` relativo se busca dentro de cada subcarpeta. Sale con 2 si alguno no terminó en `ok`: lee el `resumen.json` de ese y sigue la tabla de estados. Con un `--cwd` común, cada encargo de edición debe tocar archivos distintos.
@@ -195,8 +206,9 @@ El script imprime solo un resumen:
 
 ```text
 estado: ok
-modelo: gemini-3.8-flash-medium (pedido: rapido-medium)
+modelo: gemini-4-hydrogen-medium (pedido: medio-medium)
 tiempo: 24 s de reloj (agy: 21 s activos) · tokens de agy: 76835
+Gemini Models: 5 h 14.2 % (+1.2 %), reinicia 18:20 · semana 3.1 % (+0.30 %), reinicia 30/11 18:13 · costo ≈ USD 0.12
 conversación: 6e61969b-3aa6-4bc7-bd0f-b69fe586fc36
 archivos tocados: src/calculo.js
 respuesta (completa en …/respuesta.md):
@@ -205,7 +217,7 @@ Agregué multiplicar(a, b) en src/calculo.js y la exporté.
 
 Verifica sin releerlo todo: `git diff --stat` y el diff solo de lo que importa, las pruebas del proyecto, o un vistazo a `resultado.md`. Confía en lo que verificas, no en lo que agy dice que hizo. Lee `respuesta.md` completa solo si el resumen aparece recortado y necesitas el resto.
 
-El tiempo de reloj es el que esperó el usuario; los segundos activos de agy solo cuentan lo que trabajó el modelo. Si el resumen trae `saltos de línea corregidos`, agy había dejado `\r\r\n` en esos archivos y el script ya los normalizó a `\r\n`: el diff muestra solo los cambios reales. Si el resumen trae `generados por agy fuera del proyecto`, son archivos que agy dejó en su propia carpeta (imágenes, planes), aunque su respuesta diga que no pudo crearlos: cópialos a donde hagan falta.
+El tiempo de reloj es el que esperó el usuario; los segundos activos de agy solo cuentan lo que trabajó el modelo. La línea de cuota dice el % usado y, entre paréntesis, lo que gastó esta delegación (con otras tareas en paralelo, también lo de ellas); sin la app o el IDE de Antigravity abiertos solo trae el costo estimado. Si el resumen trae `revisar skill`, díselo al usuario en una línea: cambió algo (un modelo nuevo, un retiro, la versión de agy) que la skill aún no conoce. Si el resumen trae `saltos de línea corregidos`, agy había dejado `\r\r\n` en esos archivos y el script ya los normalizó a `\r\n`: el diff muestra solo los cambios reales. Si el resumen trae `generados por agy fuera del proyecto`, son archivos que agy dejó en su propia carpeta (imágenes, planes), aunque su respuesta diga que no pudo crearlos: cópialos a donde hagan falta.
 
 | Estado | Qué hacer |
 |---|---|
@@ -214,11 +226,11 @@ El tiempo de reloj es el que esperó el usuario; los segundos activos de agy sol
 | `permiso_rechazado` | Pediste un acceso que el script nunca da; no se ejecutó nada. No lo rodees: si hace falta, hazlo tú con permiso del usuario |
 | `incompleto` | agy intentó algo denegado o no respondió; `detalle` dice qué y cuál fue el último comando. Una sola denegación deja vacía toda la respuesta. Terminal o URL: si el acceso se justifica, dáselo al continuar; si no, refuerza la prohibición y dale en un archivo lo que buscaba. Si pidió salir del sandbox, mira primero por qué falló dentro. MCP: quita esa herramienta del encargo. Leer un archivo: `detalle` da la ruta y cuántos archivos inexistentes buscó; dile en `correccion.md` cuáles existen y que no busque otros. Luego continúa la conversación |
 | `edito_en_lectura` | agy cambió archivos en una tarea de solo lectura con sus herramientas de escritura (o no se pudo leer su transcripción). Revisa el diff de esos archivos y revierte lo que no se pidió, sin tocar cambios previos del usuario. Si agy solo leyó, el estado es `ok` con un aviso de que otro proceso cambió esos archivos: revisa igual el diff |
-| `cuota` | Repite con `--respaldo` o con otro alias. Si todos fallan, hazlo tú o pregunta al usuario |
+| `cuota` | Se agotó la cuota de Gemini, que es la misma para todos sus modelos: no cambies de modelo Gemini. Dile al usuario cuándo se reinicia (`--cuota` o el texto del error) y haz la tarea tú, o espera si él lo prefiere. Un modelo Claude dentro de agy va en otra cuota: solo si el usuario lo pide |
 | `parcial` | agy terminó con un error o un corte, pero dejó una respuesta. Si el resumen trae `respuesta_final`, lee ese archivo (`respuesta-final.md`): es el entregable limpio que agy dio tras el corte. Si no, lee `respuesta.md` antes de nada: suele estar completa o casi. Si está cortada, continúa con `--conversacion` pidiendo solo lo que falta; si el detalle habla del límite de salida, pide menos puntos y en formato corto |
 | `sin_avance` | agy no dio ningún paso en todo el plazo y el script lo cortó. Rescátala una vez: escribe `correccion.md` pidiendo que entregue ya lo que tenga, sin leer más, y continúa con `--conversacion`. Si tampoco avanza, no insistas: divide la tarea, acota el entregable o hazla tú |
 | `timeout` | Llegó al tope. Mira los pasos en `progreso.json`: si avanzaba, continúa con `--conversacion` y un `--timeout` mayor; si repetía lo mismo, o si pusiste tú un `--timeout` corto, rescátala una vez como en `sin_avance` o divide la tarea |
-| `modelo_mudo` | El modelo no devolvió nada y agy registró el silencio. **No rescates** (el rescate cae en la misma llamada muda): repite con `--respaldo`, que pasa a Argon y luego a las gamas media y rápida, o con otro alias, y acota el encargo. Si ya venía de `--respaldo`, toda la cadena falló: hazla tú o divídela |
+| `modelo_mudo` | El modelo no devolvió nada y agy registró el silencio. **No rescates** (el rescate cae en la misma llamada muda): repite con `--respaldo`, que pasa a la gama de abajo, o con otro alias, y acota el encargo. Si ya venía de `--respaldo`, toda la cadena falló: hazla tú o divídela |
 | `transitorio` | Un fallo pasajero de la plataforma (sin capacidad, error interno, conexión cortada). `--respaldo` ya reintentó y cambió de modelo; sin él, espera un minuto y repite con `--respaldo` |
 | `modelo_invalido` | El modelo no existe hoy: elige otro de `disponibles` o usa un alias |
 | `secretos` | El espacio de trabajo tiene secretos: pregunta al usuario antes de usar `--permitir-secretos` |
@@ -235,7 +247,8 @@ Si el resultado está cerca pero tiene fallos, no lo rehagas tú: escribe `corre
 En pocas líneas: qué delegaste, con qué modelo, cuánto tardó, el resultado y qué verificaste tú. Por ejemplo:
 
 ```text
-Delegué a Antigravity (gemini-3.8-flash-medium, 48 s) el renombrado en 14 archivos.
+Delegué a Antigravity (gemini-4-hydrogen-medium, 48 s, 0,4 % de la ventana de 5 h)
+el renombrado en 14 archivos.
 Verifiqué el diff (14 archivos, solo renombres) y las pruebas pasan.
 ```
 
@@ -250,6 +263,8 @@ node <carpeta de esta skill>/scripts/agy.mjs --anotar "<qué falló, por qué y 
 ```
 
 Por ejemplo: «Flash pidió la terminal porque el README del proyecto nombraba comandos; se resolvió dándole la salida en un archivo». No anotes lo que ya explica el `detalle` del resumen. Para ver qué falla más a menudo y qué se aprendió, en cualquier proyecto: `agy.mjs --incidencias`.
+
+**¿Hay que actualizar la skill?** `agy.mjs --revisar` lo dice sin gastar tokens: modelos nuevos o sin precio, retiros que anunció Google, cambios de precio de los próximos 30 días, la versión de agy frente a la probada, las incidencias desde esta versión y los días sin una versión nueva. Si da motivos, díselo al usuario.
 
 ## Trabajar con agy como subagente
 
@@ -292,7 +307,7 @@ Una revisión de un diff grande o de un proyecto entero es lo que más tarda y m
 - Usa `--respaldo`, ejecútala en segundo plano y pide en el entregable como máximo 6 hallazgos, priorizados y en formato corto: con 10, la respuesta pasó el límite de salida. Flash también lo pasa si escribe su razonamiento en la respuesta: el script ya le pide que no lo haga, pero un diff más corto es lo que más ayuda.
 - Lista solo los archivos que importan; para un diff, guarda el diff en un archivo de la carpeta del encargo y pásale ese archivo.
 - Si el repositorio tiene `CLAUDE.md`, secretos o documentos que agy no debe ver, trabaja sobre una copia: `git archive HEAD` de los archivos que importan, desempaquetada en la carpeta del encargo, más el diff. Usa esa carpeta como `--cwd`.
-- Para una segunda opinión de criterio, `medio-high` (rinde bien y gasta menos) o `potente-high` si el diff es grande o delicado; para una revisión mecánica (erratas, consistencia), `rapido-high`.
+- Para una segunda opinión de criterio, `medio-high` (rinde bien y gasta menos) o `potente-high` si el diff es grande o delicado; para una revisión mecánica (erratas, consistencia), `medio-medium`.
 - **Dale el estado actual del código, no solo el diff,** y **verifica cada hallazgo antes de aplicarlo:** en dos revisiones reales, entre 1 de cada 5 y 6 de cada 6 eran falsos u obsoletos. Lee el código señalado y, si el hallazgo depende de una API externa, confírmalo en su documentación. Descarta los falsos y dile al usuario cuántos hubo.
 - **Recalibra la gravedad:** los modelos rápidos tienden a inflarla y marcan una errata o un detalle de estilo como crítico. Asigna tú el nivel antes de informar.
 

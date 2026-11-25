@@ -81,6 +81,38 @@ export const LISTA_1811 = [
   'gpt-oss-120b-medium',
 ];
 
+// agy 1.5.16, 2026-11-24: llegó Carbon al plan Pro (con su Orchestrator, sin sufijo) y Flash, Argon y GPT-OSS
+// anuncian su retiro el 30/11. En el orden de agy.
+export const LISTA_2411 = [
+  'gemini-4-neon-high',
+  'gemini-4-neon-xhigh',
+  'gemini-4-neon-medium',
+  'gemini-4-neon-low',
+  'gemini-4-carbon-medium',
+  'gemini-4-carbon-high',
+  'gemini-4-carbon-low',
+  'gemini-4-argon-medium',
+  'gemini-4-argon-high',
+  'gemini-4-argon-low',
+  'gemini-4-hydrogen-high',
+  'gemini-4-hydrogen-xhigh',
+  'gemini-4-hydrogen-medium',
+  'gemini-4-hydrogen-low',
+  'gemini-pro-orchestrator-neon',
+  'gemini-pro-orchestrator',
+  'gemini-pro-orchestrator-argon',
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-low',
+  'claude-opus-5-5-low',
+  'claude-opus-5-5-medium',
+  'claude-opus-5-5-high',
+  'claude-sonnet-5-5-low',
+  'claude-sonnet-5-5-medium',
+  'claude-sonnet-5-5-high',
+  'gpt-oss-120b-medium',
+];
+
 // Inventada: versiones nuevas de todas las familias, desordenadas a propósito (las más viejas primero), para que
 // el script no dependa del orden en que agy las lista. «xenon» es una familia potente que no existe: debe entrar
 // sola en la gama.
