@@ -1390,7 +1390,9 @@ test('agy: con terminal, los comandos no heredan tokens; agy conserva sus propia
   for (const v of ['GH_TOKEN', 'MI_SECRET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_KEY', 'GH_PAT', 'DB']) assert.ok(!conTerminal.includes(v), v);
   for (const v of ['GEMINI_API_KEY', 'OTRA', 'WEB']) assert.ok(conTerminal.includes(v), v);
   const sinTerminal = correr(p, 'exito', ['--modelo', 'gemini-3.8-flash-medium'], entorno).llamadas.at(-1).entorno;
-  assert.ok(sinTerminal.includes('GH_TOKEN'), 'sin terminal, el entorno no cambia');
+  assert.ok(sinTerminal.includes('GH_TOKEN'), 'sin terminal, el resto del entorno no cambia');
+  // 0.8.1: siempre marcado como subagente, para que los hooks de Thoth no le escriban al usuario por Telegram.
+  for (const e of [conTerminal, sinTerminal]) assert.ok(e.includes('THOTH_SUBAGENTE'), 'THOTH_SUBAGENTE');
 });
 
 test('agy: pide_permiso entrega los pedidos en el resumen y no cuenta como incidencia', () => {
