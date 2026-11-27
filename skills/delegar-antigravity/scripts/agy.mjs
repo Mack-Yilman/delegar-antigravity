@@ -613,6 +613,13 @@ const CREDENCIALES_DE_AGY = new Set(['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE
 export const entornoSinSecretos = (entorno) =>
   Object.fromEntries(Object.entries(entorno).filter(([k, v]) => CREDENCIALES_DE_AGY.has(k.toUpperCase()) || !(VARIABLE_SENSIBLE.test(k) || URL_CON_CLAVE.test(v))));
 
+// Entorno de agy: sin tokens si tiene terminal, y siempre marcado como subagente para que los hooks que hablan con el
+// usuario (como Thoth, que manda preguntas a Telegram) se queden callados: agy le pide todo a su orquestador.
+export const entornoAgy = (ajustes, entorno = process.env) => ({
+  ...(ajustes ? entornoSinSecretos(entorno) : entorno),
+  THOTH_SUBAGENTE: 'delegar-antigravity',
+});
+
 // Los pedidos de agy, una línea «PERMISO: <comando> — <por qué>», aunque venga en una lista, en negrita o con comillas.
 // En mayúsculas, como se le pide: «Permiso: solo lectura» es texto normal de una respuesta.
 export function extraerPermisos(texto) {
@@ -1418,10 +1425,10 @@ function rutaReal(ruta) {
 // solo cada ejecución que no termina en ok, y el orquestador agrega lecciones con --anotar; --incidencias las
 // resume para mejorar la skill. Nunca guarda el encargo ni la respuesta: pueden tener datos del usuario.
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.8.1';
 // Para el protocolo de actualización (--revisar): fecha de esta versión, versión de agy con la que se probó y la
 // lista de `agy models` que conocía. Lo que se salga de esto es motivo para revisar la skill.
-export const FECHA_VERSION = '2026-11-24';
+export const FECHA_VERSION = '2026-11-26';
 export const AGY_PROBADA = '1.5.16';
 export const MODELOS_CONOCIDOS = [
   'gemini-4-neon-high', 'gemini-4-neon-xhigh', 'gemini-4-neon-medium', 'gemini-4-neon-low',
@@ -2035,7 +2042,7 @@ async function principal() {
       errores,
       // agy corta primero con --print-timeout y devuelve lo que tenga; el margen es por si no lo hace.
       limiteMs: timeout ? (timeout + margen) * 1000 : 0,
-      env: ajustes ? entornoSinSecretos(process.env) : process.env,
+      env: entornoAgy(ajustes),
       vigilar: vigilante.sondear,
       sondeoMs: Number(process.env.DELEGAR_AGY_SONDEO ?? 30000),
     });

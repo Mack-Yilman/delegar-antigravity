@@ -314,6 +314,7 @@ Una revisión de un diff grande o de un proyecto entero es lo que más tarda y m
 ## Seguridad
 
 - Nunca uses `--dangerously-skip-permissions` sin un sí explícito del usuario para esa tarea.
+- agy corre con `THOTH_SUBAGENTE=delegar-antigravity`: los hooks que le escriben al usuario (como Thoth por Telegram) se callan, y agy te pide a ti lo que necesite. Tú decides y, si hace falta, le preguntas al usuario.
 - Lo que agy lee sale a los servidores de Google: no delegues datos de pacientes, datos clínicos, datos personales, secretos, `.env` ni credenciales sin permiso explícito.
 - agy nunca hace commit, push ni publica nada. Tú revisas el diff antes de seguir y pides permiso al usuario para lo que lo requiera.
 - Da los accesos con los flags del script, que valen para una sola llamada. No cambies la configuración ni los permisos permanentes de agy (`settings.json`) sin pedirlo al usuario.

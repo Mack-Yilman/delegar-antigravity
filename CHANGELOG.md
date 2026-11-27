@@ -1,5 +1,9 @@
 # Historial de versiones
 
+## 0.8.1 — 2026-11-26
+
+- **agy corre marcado como subagente:** el script le pasa `THOTH_SUBAGENTE=delegar-antigravity` en su entorno. Los hooks que hablan con el usuario (como [Thoth](https://github.com/Mack-Yilman/thoth) 0.3.0, que lleva preguntas y avisos a Telegram) lo detectan y se quedan callados: agy le pide todo a su orquestador, que decide y, si hace falta, le pregunta al usuario. Se comprobó que los hooks de agy heredan el entorno del proceso.
+
 ## 0.8.0 — 2026-11-24
 
 Antigravity habilitó Gemini 4 Carbon en el plan Pro, anunció el retiro de 3.8 Flash, Argon y GPT-OSS para el 30/11 y unificó las cuotas: todos los Gemini comparten un límite de 5 h y uno semanal, y cada tarea gasta en proporción al costo de sus tokens.
